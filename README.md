@@ -132,5 +132,5 @@ The server's worker REST API is in
 Apache License 2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE). Code in
 `internal/botagent` is derived from bot-agent, also Apache-2.0
 (`internal/botagent/NOTICE`). The name "Defect Drainer" is not covered by the
-licence: see [TRADEMARKS.md](TRADEMARKS.md). Contributions are welcome under
-the terms in [CONTRIBUTING.md](CONTRIBUTING.md).
+licence: see [TRADEMARKS.md](TRADEMARKS.md). Outside pull requests aren't
+merged yet; see [CONTRIBUTING.md](CONTRIBUTING.md), and open an issue instead.
