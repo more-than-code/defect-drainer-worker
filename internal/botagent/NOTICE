@@ -1,0 +1,33 @@
+internal/botagent
+
+This directory contains code derived from bot-agent
+(github.com/more-than-code/bot-agent), licensed under the Apache License,
+Version 2.0. A copy of that licence is in LICENSE in this directory.
+
+Source commit: 040a7bd947ace45036b32b02585d531845f65f4a (2026-11-15)
+Source paths:  internal/agent/{conn,spool,redact,config,policy}
+
+The files were modified for Defect Drainer's dd-worker (2026-11-15). Each
+package's doc comment lists its changes. In summary:
+
+- conn:   the frame limit, envelope and version come from this
+          module's workerproto package; encoding/json replaces bot-agent's
+          protocol.Marshal. Backoff, Dial (redirects refused) and frame IO
+          are unchanged.
+- spool:  ids are worker protocol ids instead of UUIDs (the google/uuid
+          dependency is dropped); a full spool refuses a frame instead of
+          dropping the oldest; age is enforced only by DropOlderThan; Bytes
+          is added.
+- redact: encoding/json replaces protocol.Marshal; CmdlineMax is local;
+          Exact.Values (exact values only, no keyword regex) and Exact.Empty
+          are added.
+- config: DD_WORKER_* keys and /etc/dd-worker, /var/lib/dd-worker paths;
+          the server is an https origin; no environment overlay; the join
+          token is read from stdin and never stored; WriteFileAtomic is
+          exported.
+- policy: the key set is a caller-supplied schema; a scalar string is
+          accepted; bot-agent's keys and the passwd/group resolution are
+          dropped. The file checks (root owner, mode, size, SHA-256) and the
+          value parsers are kept.
+
+Tests were adapted to the changes above.

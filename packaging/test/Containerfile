@@ -1,0 +1,8 @@
+# Test host for packaging/test/install_test.sh: a clean Debian bookworm with
+# install.sh's prerequisites (git, bubblewrap, socat, curl). The multi-arch
+# index digest, so the same pin serves arm64 (the Mac) and amd64 (CI).
+FROM docker.io/library/debian:bookworm@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates curl git bubblewrap socat \
+ && rm -rf /var/lib/apt/lists/*

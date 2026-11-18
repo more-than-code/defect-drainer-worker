@@ -1,0 +1,37 @@
+# dd-worker: the Defect Drainer worker (docs/worker-w3.md §3.3).
+# Installed by install.sh to /etc/systemd/system/dd-worker.service.
+[Unit]
+Description=Defect Drainer worker (dd-worker)
+Documentation=https://github.com/more-than-code/defect-drainer-worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dd-worker
+Group=dd-worker
+ExecStart=/usr/local/bin/dd-worker run --claude-bin /usr/local/bin/claude
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+# Exit 3 = revoked, 4 = fatal (replaced, protocol or org mismatch): the owner
+# must act, so systemd does not restart into a loop.
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=3 4
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/dd-worker /home/dd-worker
+PrivateTmp=yes
+UMask=0077
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+# RestrictNamespaces is deliberately not set: Claude's sandbox (bubblewrap)
+# needs user namespaces.
+
+[Install]
+WantedBy=multi-user.target

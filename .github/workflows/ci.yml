@@ -1,0 +1,38 @@
+# dd-worker CI: vet, gofmt, race tests (the module-root boundary test runs
+# with them), the tidy grep and the install.sh container test, on every push
+# and pull request to main. Actions are pinned by commit SHA.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: go vet and gofmt
+        run: make vet
+      # The runner user is not root, so permission checks in the tests hold.
+      - name: go test (race)
+        run: go test ./... -race -count=1 -timeout 25m
+      - name: Tidy grep
+        run: make tidy-check
+      # install.sh in throwaway Podman debian:bookworm containers.
+      - name: install.sh container test
+        run: make worker-package-test

@@ -1,0 +1,430 @@
+# Worker protocol v1
+
+**Status:** **frozen**, 2026-11-15 (the maintainers). It's r2: r1 went through an independent contract and security review, and its 17 findings are folded in here. Frozen means: the W2 slices (W2a `cmd/dd-worker`, W2b the server hub plus REST, W2c the console) build against this file in parallel, and nobody changes it without Main Dev re-approving. A change after the freeze is a new capability (§10), never an edit to a v1 frame.
+
+**Parent spec:** `worker-agent.md` (a control-plane design doc, not published) §3.2–3.4, D1–D8, and the answers to Q3 and Q4 (§11). Where names differ, this file supersedes the parent's §5 contract diff (for example `adapter_unavailable` replaces `runner_unavailable`). **Seam it carries:** `internal/exec` `JobSpec` / `Event` / `Control` as merged in W1a (`05ee5f7`), plus the W2 additions in §8.
+
+**Conventions:**
+- Frame keys are `snake_case`.
+- Embedded `exec` types keep their Go JSON tags **exactly as they are**: `JobSpec`, `Event`, `Control` and their children are camelCase, while `Defect`, `Batch`, `RepoEntry`, `VerifyCommand`, `TestRun` and `RunStep` are snake_case. Implementers must not normalise them.
+- "Must", "must not" and "may" are normative.
+
+## 1. Transport
+
+| Item | Rule |
+|---|---|
+| Endpoint | `wss://<PUBLIC_ORIGIN>/worker/v1/ws`. In the Mac dev loop, `ws://127.0.0.1:<port>/…` is allowed only when the server runs `AUTH=none` on loopback |
+| Who dials | The worker, always |
+| Auth | `Authorization: Bearer dd_wrk_<secret>` on upgrade; the enrol socket uses `Bearer dd_wjn_<secret>` (§3). A cookie or ingest token gets 401 |
+| Redirects | The worker must refuse any 3xx |
+| Route | `/worker/` is auth kind `worker` in `internal/api/routes.go`; `isAPIPath` covers it |
+| First frame | `hello` (or `enroll`) within **10 s** of upgrade, else close 1008 |
+| Frames | Text, UTF-8 JSON, one object per frame, **≤ 1 MiB**. A single `exec.Event` must be **≤ 768 KiB**: the worker truncates oversized string fields (§6.2) and never emits a larger event. A frame over 1 MiB gets `error {code:"frame_too_large"}`, then a close with 1009 |
+| Envelope | `{"v":1,"type":"<type>", …}` |
+| Sockets | One per worker. A newer authenticated socket for the same worker replaces the old (§4.5) |
+| Close codes | 1000 normal; 1008 policy or auth; 1009 too big; 4000 `replaced`; 4001 `revoked`; 4002 `protocol_unsupported`; 4003 `org_mismatch` (the `hello.policy.orgs` doesn't contain the credential's org) |
+
+**HTTPS side-channel** (§7):
+- base `https://<PUBLIC_ORIGIN>/worker/v1/`;
+- `Authorization: Bearer dd_wjt_<secret>`, a job-scoped token.
+
+## 2. Decoding and validation
+
+- **Lenient on unknown keys** in frames and embedded `exec` types.
+- **Strict on required keys and types:** violations get `error {code:"bad_frame", ref_type, detail}`, and the frame is ignored. Three within 60 s close the socket with 1008.
+- **Unknown `type`:** the receiver ignores it and sends `error {code:"unknown_type"}` once per type per socket.
+- **Enums:** an unknown value in an optional field is ignored; in a required field it's `bad_frame`.
+- **Times** are RFC 3339 UTC; **durations** are integer seconds, `*_sec`.
+- **Ids** (`job_id`, `lease_id`, `request_id`, `worker_id`) must match `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`, so no `.` or `:`, and never `.`/`..`.
+- **`sha256`** values are 64 lowercase hex characters.
+- **Path-ish fields:** `Worktrees[].Repo`, `RepoEntry.Name`, `EvidenceRef.Path`, `HarvestFile.Filename` and every file in a `ship` list must be relative, with no `..` segment, no leading `/` or `\`, and no NUL, and each segment must match `^[A-Za-z0-9._-]+$`. A violation in a spec makes the worker refuse it (`bad_spec`); in an event, the server refuses it (`bad_frame`) and writes nothing. The worker also resolves every path it builds and checks it stays under that job's dir.
+- **Duplicate job ids:** `exec.Event.jobId` and `exec.Control.jobId` must equal the frame's `job_id`, else `bad_frame`.
+
+## 3. Enrolment (one-shot socket)
+
+1. An org admin creates a join token in Settings → Workers: `dd_wjn_…`, single use, 1 hour, bound to that org, stored as SHA-256.
+2. On the host: `dd-worker init --server <origin> --join-token-stdin`.
+3. The worker dials with `Bearer dd_wjn_…` and sends `{"v":1,"type":"enroll","hostname":"worker-1","machine_id_hash":"<sha256 of /etc/machine-id>","version":"0.1.0","os":"linux","arch":"arm64"}`.
+4. The server, in one transaction:
+   - marks the join token used;
+   - creates or updates the worker (same org plus same `machine_id_hash` means the same `worker_id`);
+   - revokes every previous credential of that worker and ends its live leases `worker_lost` (a re-enrolled machine has lost its state);
+   - mints a credential, storing only its hash;
+   - writes an audit row.
+
+   It replies once, `{"v":1,"type":"enrolled","worker_id":"wrk_…","org_id":"org_…","credential":"dd_wrk_…"}`, and closes with 1000. A bad, used or expired token gets close 1008 with no frame.
+5. The worker writes the credential atomically (temp, fsync, rename), mode 0600, before exiting 0.
+
+## 4. Session
+
+### 4.1 Handshake
+
+Worker → server:
+
+```json
+{"v":1,"type":"hello","worker_id":"wrk_…","version":"0.1.0","protocol":1,"capabilities":["blobs.v1"],
+ "max_jobs":1,"busy_job_ids":["bjob_…"],
+ "adapters":[{"name":"claude","version":"2.1.292","credential_mode":"api_key","ready":true,"min_ok":true,"reason":""}],
+ "tools":[{"name":"git","version":"2.47.1","ready":true,"reason":""},{"name":"gh","version":"2.62.0","ready":false,"reason":"signed_out"}],
+ "policy":{"valid":true,"enabled":true,"orgs":["org_…"],"adapters":["claude","grok"],"allow_verify_commands":true,"allow_ship":false,
+           "repos":["https://github.com/more-than-code/*"],"min_sandbox":"strict","max_turns":200,"max_wall_sec":2700}}
+```
+
+**The server must check:**
+- `worker_id` equals the credential's worker, else close 1008;
+- `policy.orgs` contains the credential's org, else close 4003;
+- `adapters` has at most 8 entries;
+- `tools`, when present, has at most 8 entries, each named `git` or `gh`, else close 1008 (`bad hello`). A hello without `tools` (a worker older than N5) is accepted;
+- each `busy_job_ids` entry is a lease held **by this worker** in this org. Others are ignored, and the server sends `lease_lost` for each.
+
+**Field rules:**
+- `protocol` is the highest the worker speaks. The server answers with the one it chose, or closes 4002.
+- `adapters[].ready` comes from the readiness check run **under the exact child env a job would get**. Its `reason` is one of `missing`, `too_old`, `signed_out`, `no_key`, `unsupported_os`.
+- `tools` (optional, added 2026-11-17 as N5; protocol stays 1) says whether the host can clone (D1) and ship (D2). The worker checks them under the env its own clone and push get (`git.HostToolEnv`, git with hooks off), from `/`, at hello and every 5 minutes (never before an `accept`: `gh auth status` may go to the network, and the offer has a 30 s answer window):
+  - `git`: `git --version` (`missing`; `too_old` under 2.32.0, raised from 2.25.0 in W3: the pinned worktree git needs `GIT_CONFIG_GLOBAL`), then a GitHub route: `git config --get-urlmatch credential.helper https://github.com` names `gh auth git-credential`, or `SSH_AUTH_SOCK` is set; else `no_git_helper`;
+  - `gh`: `gh --version` (`missing`; `too_old` under 2.0.0), then `gh auth status --hostname github.com` exits 0; else `signed_out`.
+
+  Only `name`, `version`, `ready` and `reason` are sent: never a token, an account name or gh's output. `tools` is display only; the server stores it in `workers.status_doc` and does not schedule on it.
+- **`busy_job_ids` lists every job with a live agent child OR any unacked spool entry, OR an unacked `control_result`** (§6.3). A worker that restarted lists only jobs whose spool or results remain; jobs whose child died with it are reported as in §6.4.
+- `policy` is informational for the server, which uses it to schedule. **The worker enforces its own policy regardless** (§6.5).
+
+Server → worker: `{"v":1,"type":"hello_ok","protocol":1,"heartbeat_sec":20,"server_time":"…","capabilities":["blobs.v1"]}`. The server stops processing the replaced socket before it sends `hello_ok` on the new one. After `hello_ok`:
+- the server re-attaches leases (§5.3);
+- the worker replays its spool;
+- the server redelivers unanswered controls (§6.3).
+
+### 4.2 Liveness and status
+
+- **Ping:** `ping {job_ids:[…]}` / `pong {}`. The worker pings every `heartbeat_sec`, and `job_ids` (at most `max_jobs` entries) renews only leases held by this worker.
+- **Offline:** no frame for 60 s.
+- **Status:** worker → server `status {adapters, tools, policy, max_jobs, busy_job_ids}`, sent on any change and after every readiness re-check (every 5 minutes, and before each `accept`). `tools` is optional and follows the §4.1 rules; it is refreshed on hello and by the 5-minute re-check only, so a pre-accept status carries the last result. A status that breaks the rules is answered `bad_frame` and not saved.
+
+### 4.3 Credential rotation (no gap, no lockout)
+
+1. Server → `rotated {credential:"dd_wrk_B"}`. The server sends it every 30 days, or on an admin's demand.
+2. The worker renames its current file to `env.prev` (holding A), writes B to `env` atomically, then sends `rotate_ack {}`.
+3. On `rotate_ack`, the server revokes every credential of this worker older than B.
+
+- **On dial,** the worker tries `env`, then `env.prev`. A successful auth with a pending credential (B) counts as an implicit `rotate_ack`.
+- **Re-sending a rotation** mints a new pending credential C, but **never revokes a previously issued pending one**. At most 2 are pending, and a pending credential not used within 7 days expires.
+- **Hard cutoff:** the superseded credential A is revoked no later than 7 days after the first `rotated`, acked or not.
+- The worker deletes `env.prev` after a successful dial with `env`.
+
+### 4.4 Revocation
+
+- **Server side:** an admin revoke closes the socket with 4001. The server ends the worker's live leases `worker_lost` and revokes its `dd_wjt_` job tokens. Later upgrades get 401.
+- **Worker side, on 4001 or 401:**
+  - it sends SIGINT, then SIGKILL after 3 s, to every agent child;
+  - it deletes its credential files, its job tokens and its spool;
+  - it keeps worktrees on disk, for the owner to inspect;
+  - it exits non-zero without retrying.
+
+### 4.5 Replaced sockets
+
+- On close 4000, the worker waits at least 60 s with jitter before redialling. If it's replaced 3 times within 10 minutes, it exits non-zero: two hosts are sharing one credential, and the owner must re-enrol one of them.
+- An offer is bound to the socket it was sent on. An `accept` on another socket gets `lease_lost`.
+
+## 5. Jobs
+
+### 5.1 Scheduling
+
+- **Candidates:** the org's online workers that meet every one of these:
+  - `policy.valid` and `policy.enabled`;
+  - every repo of the app matches `policy.repos` (§6.5 canonical match);
+  - outstanding offers plus busy jobs under `max_jobs`;
+  - the adapter rule (Q4) holds.
+- **Q4, adapter rule:**
+  - the app's agent setting is **empty**: a candidate needs at least one adapter that is both ready and in `policy.adapters`. The worker picks the first ready one in `policy.adapters` order. Its default order is `claude, grok, codex, antigravity`.
+  - the setting is **set**: that adapter must be ready **and** allowed by `policy.adapters`. There is no fallback.
+- **Choice:** the candidate with the fewest active jobs; ties go to the earliest `last_seen`.
+- **No candidate:** the job stays `queued`, `queued_reason:"no_worker"`, with a `queued_detail` naming why (for example `worker-1: claude signed_out`).
+- **Declines:** a `decline` or a timeout excludes that worker for that job, and the server tries the next candidate. Once every candidate has declined, the job is `queued no_worker` with the decline reasons in `queued_detail`. It's re-tried when any worker sends `status` or `hello`.
+- **Sticky:** Resume, the reviewer and shipping go to the worker that started the job. If that worker is offline or revoked, the API answers 409 `worker_unavailable`.
+
+### 5.2 Offer, validate, accept
+
+Server → worker:
+
+```json
+{"v":1,"type":"offer","job_id":"bjob_…","lease_id":"ls_…","lease_until":"…","adapter":"claude","model":"",
+ "mode":"fresh","spec_url":"/worker/v1/jobs/bjob_…/spec","job_token":"dd_wjt_…"}
+```
+
+- **Before answering,** the worker **must** fetch and validate the spec (`GET spec_url`; the token is valid from offer time) and apply its policy (§6.5).
+- It then answers **within 30 s** with `accept {job_id, lease_id}`, or with `decline {job_id, lease_id, reason}`. `reason` is one of `busy`, `adapter_unavailable`, `policy_denied`, `secret_missing`, `bad_spec` or `internal`.
+- Blob downloads, the D1 clone and cutting worktrees happen **after** `accept`.
+- With no answer in 30 s, the offer is withdrawn, and a late `accept` gets `lease_lost`. The worker must not start a job until its `accept` has drawn no `lease_lost` within 5 s, or until the first `ack` for it arrives.
+
+### 5.3 Lease
+
+- A lease lasts 120 s. It's renewed by every `progress` frame and by every `ping` that lists the job.
+- **Server restarts don't count:**
+  - on boot, the server sets every live lease's `lease_until = now + 120 s` and runs no lapse sweep before then;
+  - a lease counts down only while the server is up.
+
+  A reconnect after a server restart is a re-attach (below).
+- **Lapse:** the server ends the job `failed` with reason `worker_lost` and doesn't re-queue it. The operator can Rerun.
+- **Re-attach:** for each valid `busy_job_ids` entry whose lease hasn't lapsed, including a job that already sent `done` and isn't acked yet, the server sends `lease {job_id, lease_id, lease_until, job_token}`, with the **same** `lease_id` and a fresh `job_token`, and the worker resumes streaming from its spool.
+- **A frame for a lapsed or unknown lease** gets `error {code:"lease_lost", job_id, lease_id}`. The worker then:
+  - stops that job's agent child, if any;
+  - drops **only that job's** spool entries and stored control results;
+  - **keeps its worktrees** for a later Rerun or `discard`.
+
+  A `done` arriving after its lease lapsed is discarded, and the job stays `worker_lost`.
+
+### 5.4 Job token
+
+- `dd_wjt_` tokens are stored as SHA-256 and scoped to one job.
+- **Expiry:** the current `lease_until`. A renewal extends it, and a previously issued token stays valid until its own expiry. After `done` is acked, it ends 10 minutes later.
+- **Fresh tokens** arrive in `offer`, `lease` and `control` frames that need HTTPS (`resume`). The worker always uses the newest one.
+- **Revocation:** a worker revocation revokes all of them (§4.4).
+
+## 6. Streaming, control and policy
+
+### 6.1 Progress and ack
+
+Worker → server: `{"v":1,"type":"progress","job_id":"…","lease_id":"…","seq":42,"events":[<exec.Event>, …]}`
+
+- `seq` is per job, starts at 1, has no gaps, and increases by 1 per frame. Batches hold at most 64 events or 1 s, split so a frame stays ≤ 1 MiB.
+- **Spool:** each frame is written to the spool (mode 0600) **before** it's sent, and kept until acked.
+  - A worker whose spool exceeds **200 MiB** declines new offers `busy`. If one running job alone exceeds it, the worker ends that job `done {state:"failed", line:"spool_full: …"}`.
+  - The **24 h** cap applies only to entries of jobs that already ended (their `done` was spooled) and are still unacked. Those are dropped after 24 h, and the server will have marked the job `worker_lost`.
+- **Server side:** the server applies a frame's events **and** updates `job_leases.last_seq` in **one transaction**, and sends `{"v":1,"type":"ack","job_id":"…","seq":42}` only after commit. Acks are cumulative.
+- **Idempotent:**
+  - a `seq` ≤ `last_seq` is re-acked and ignored;
+  - a gap gets `error {code:"seq_gap", job_id, expected}`;
+  - after any rejection of a job's frame (`seq_gap`, `blob_missing`, `bad_frame`), the server applies **no later frame for that job** until the worker resends from `expected`.
+- **Last event:** a job's last event is `exec.Event{kind:"done"}`. After acking it, the server ends the lease; the worker deletes that job's spool entries and keeps the worktrees until `discard`.
+
+### 6.2 Size limits inside events
+
+- **Strings:** any string field in an `exec.Event` over 256 KiB is truncated by the worker to 256 KiB, and a `log` line `field truncated: <path>` is emitted. This covers the `VerificationRun` output tails, `HarvestedDefect.Note` and test-step `Actual`.
+- **Images and notes:** these travel as blobs (§7). Inline `Data` is never sent remotely.
+
+### 6.3 Control (durable, idempotent)
+
+Server → worker:
+
+```json
+{"v":1,"type":"control","job_id":"…","lease_id":"…","request_id":"rq_…","control":<exec.Control>,"job_token":"dd_wjt_…"}
+```
+
+| `control.kind` | Params (in `exec.Control`, §8.5) | `control_result.result` |
+|---|---|---|
+| `cancel` | none | `{}`. Events end with `done {state:"cancelled"}` within 5 s |
+| `resume` | `specUrl` (the next run's spec, fetched with the frame's `job_token`; never inline) | `{}`. A new `progress` stream continues the job's `seq` |
+| `ship_preview` | none | `{"repos":[{"repo":"…","files":["…"],"message":"…"}]}` |
+| `diff` | `repo` | `{"repo":"…","diff":"…","truncated":false}`, with `diff` ≤ 512 KiB |
+| `ship` | `repos:[{repo, files[], message, title, body}]` | `{"prs":[<job.prs[] entry: kind:"pr", repo, branch, base, status, url, ghNumber, ghState, error>]}` |
+| `discard` | none | `{}`. Worktrees and handoff are removed |
+
+- **With `gittoken.v1` (§14), a `ship` pushes only**: the worker answers per repo `{repo, branch, base, pushed, head_sha, error}`, and the server opens or updates the PR through the GitHub API and fills `job.prs[]`. The `gh pr create` path below is the pre-`gittoken.v1` behaviour.
+- **Ship is PR-only in v1:** push plus `gh pr create` from the worker, per D2. The Mac's `base_source=local` merge has no remote equivalent. A `ship` for a repo whose entry is `local` gets `ok:false, code:"bad_spec"`.
+
+Worker → server: `{"v":1,"type":"control_result","job_id":"…","request_id":"rq_…","ok":true,"result":{…},"code":"","detail":""}`
+
+- **Durable:** the worker persists each `control_result`, keyed by `request_id`, **before** sending it. It keeps it until `control_ack {job_id, request_id}` arrives.
+- **Idempotent:** a repeated `request_id` is answered from the stored result and **never executed twice** (no second push or PR).
+- **Redelivery:** after a re-attach, the server resends every control that has no `control_result`, with the same `request_id`. That includes an unanswered `cancel`.
+- **Leases for controls:** shipping and discard on a finished job need a lease. The server first sends a 120 s `lease` frame for it.
+- **Offline worker:** the API answers 409 `worker_unavailable` and nothing is sent.
+
+### 6.4 Worker restart
+
+On start, for each job dir with no live agent child:
+- if its spool holds a `done`, the job is listed in `busy_job_ids` and replayed;
+- otherwise, the worker appends `exec.Event{kind:"done", done:{state:"failed", line:"worker_restarted: agent child lost"}}` to the spool and lists the job.
+
+Either way, the worktrees stay for Resume or Rerun.
+
+### 6.5 Host policy is the worker's call (the server can't widen it)
+
+The worker applies its `policy.toml` to **every** `JobSpec`, including each `resume` spec, before it acts:
+
+| Spec input | Worker rule |
+|---|---|
+| repos (`RepoEntry.URL`) | Canonicalise first: scheme `https` or `ssh`/`git@` only; no userinfo; no `ext::`, `file:` or a leading `-`; lowercase host; strip a trailing `.git`. Then the host must match exactly, and the path is compared segment by segment, where `*` matches **one** segment. No match means `decline policy_denied` |
+| `AppSettings.Sandbox` | Effective sandbox = the stricter of the spec's and `policy.min_sandbox` (order: `read-only` > `strict` > `workspace`) |
+| `Caps`, `AppSettings.MaxTurns` | Clamped to `policy.max_turns` and `policy.max_wall_sec` |
+| `adapter`, `model` | `adapter` must be in `policy.adapters` and ready. `model` must match `^[A-Za-z0-9._/-]{0,64}$` and must not start with `-` |
+| `VerifyCommands` | These are **arbitrary shell chosen by org admins**. They run only if `allow_verify_commands`; otherwise the job runs without verify, logs "verify skipped by host policy", and emits `verification {ran:false}` |
+| `ship` control | Only if `allow_ship`; otherwise `control_result {ok:false, code:"policy_denied"}` |
+| invalid or non-root-owned `policy.toml` | `policy.valid:false`; every offer is declined `policy_denied` |
+
+### 6.6 Secrets on the host (D5)
+
+- **`secret_missing`** is decided **only** from `TestRunSpec.SecretEnv`, the one variable this job needs. If it's absent from `/etc/dd-worker/secrets.env`, the offer is declined `secret_missing`.
+- **The deny set is the worker's own.** It takes every name in `secrets.env` except `SecretEnv` and the chosen adapter's own key, plus the spec's `StripEnv`; names that aren't valid env-var names are ignored. The server builds `StripEnv` **from the job's org only**.
+- **Never sent or stored:** no secret value appears in a frame, the spool, an event or a log (`redact.Exact`).
+
+## 7. HTTPS: spec and blobs
+
+| Method and path | Body | Notes |
+|---|---|---|
+| `GET /worker/v1/jobs/{job_id}/spec` | → `exec.JobSpec` (remote shape, §8) | Valid from offer time. The same 404 is returned for another job's id or an unknown one |
+| `GET /worker/v1/jobs/{job_id}/blobs/{sha256}` | → bytes | 404 unless this job's spec references that hash |
+| `PUT /worker/v1/jobs/{job_id}/blobs/{sha256}` | bytes | Harvest images and notes. See the rules below |
+| `POST /worker/v1/jobs/{job_id}/git-token` | `{"repo","access"}` → `{"token","expires_at","url"}` | `gittoken.v1` only. See §14 |
+
+**Rules for `PUT` blobs:**
+- **Allowed types:** `image/png`, `image/jpeg`, `image/webp`, `image/gif` and `text/plain`.
+- **Checks:** the server sniffs the magic bytes (415 on a mismatch; SVG always 415) and verifies the hash (400 `hash_mismatch`).
+- **Caps:** per file, intake's limit (413); per job, 200 blobs and 100 MiB (413 `job_blob_limit`). A repeat `PUT` is idempotent.
+- **Storage key** includes the job (`job_blobs(job, sha256)`), so no cross-job existence oracle. The server stores the sniffed type and serves blobs to the console with `X-Content-Type-Options: nosniff` as an attachment.
+- **Upload order:** an event may reference a blob only after its `PUT` returned 2xx. An event naming an unknown hash gets `error {code:"blob_missing", job_id, sha256}`. The worker re-uploads, then resends from that `seq` (§6.1).
+
+## 8. W2 changes to the `internal/exec` types (additive)
+
+These close the local-only assumptions in W1a's seam. The `local` transport keeps today's behaviour.
+
+1. **Server-local fields are omitted from a remote spec:**
+   - `JobSpec.Handoff` and `DefectsRoot`;
+   - `Worktrees[].WorktreeAbs` and `PrimaryAbs`;
+   - `Defect.Path` and `Batch.Path`.
+2. **Worker-side derivation:**
+   - handoff `{state}/jobs/<job_id>/handoff`;
+   - clone `{state}/repos/<sha256 of canonical URL>` (D1);
+   - worktrees `{state}/jobs/<job_id>/worktrees/<repo>`;
+   - evidence materialised at `{state}/jobs/<job_id>/evidence/<EvidenceRef.Path>`, so `DefectsRoot` = `{state}/jobs/<job_id>/evidence`.
+3. **Worktree fields in a remote spec:**
+   - the **server** assigns `Worktrees[].Branch` (`dd/<job_id>/<repo>`) and sets `RepoURL` (canonical), `BaseSource:"origin"` and the base branch;
+   - the **worker** resolves `BaseRef` from its clone after a fetch.
+
+   If the base is missing, the job ends `done {state:"failed", line:"base_missing: <repo> <branch>"}`. `base_source:"local"` is refused for remote jobs (`bad_spec`).
+4. **Blobs:**
+   - `EvidenceRef.SHA256` is required for remote jobs;
+   - `HarvestFile` gains `sha256` and `size`;
+   - `HarvestedDefect` gains `noteSha256` and `noteSize` (the note can go as a blob when over 64 KiB).
+
+   Remote events omit `data`; `local` keeps it inline.
+5. **`Control`** gains `requestId`, `specUrl`, `repo` and `repos []ShipRepo{repo, files, message, title, body}` (§6.3). New kinds: `ship_preview`, `diff`, `ship`, `discard`.
+6. **Adapter choice (Q4):** `JobSpec` gains `adapter` (empty means the worker picks, per §5.1) and `model`. Resume and Rerun specs carry the adapter that **started** the job.
+7. **Seq:** `seq` stays at frame level only. `exec.Event` is unchanged.
+
+## 9. Errors and job reasons
+
+**Frame `error` codes:**
+- `bad_frame`;
+- `unknown_type`;
+- `frame_too_large`;
+- `lease_lost`;
+- `seq_gap`;
+- `blob_missing`;
+- `not_owner`;
+- `internal`.
+
+**Job reasons:** a failed job's reason is the **normative prefix** `"<code>: "` on `Done.Line` (and `Status.Error`), as `exec` does today. Additive job JSON: `worker:{id,name}`, `queued_reason`, `queued_detail`.
+
+| Where | Code | When |
+|---|---|---|
+| Start fix, Resume, Rerun, Create PRs, diff, discard | 409 `worker_unavailable` | sticky worker offline or revoked |
+| `queued_reason` | `no_worker` | no candidate, or all declined (§5.1) |
+| reason | `worker_lost` | lease lapsed, or worker re-enrolled or revoked |
+| reason | `worker_restarted` | agent child lost in a worker restart |
+| reason | `secret_missing` | `SecretEnv` absent on the host |
+| reason / decline | `policy_denied` | host policy refuses |
+| reason | `adapter_unavailable` | chosen adapter went not-ready |
+| reason | `base_missing` | base branch absent in the worker's clone |
+| reason | `lfs_missing` | the repo uses Git LFS and the host has no `git-lfs` (W3, additive) |
+| reason | `spool_full` | one job exceeded the spool cap |
+| reason | `agent_auth` | unchanged |
+
+## 10. Capabilities
+
+- **Names:** a capability is a lowercase dotted name with a version, for example `blobs.v1`.
+- **Gating:** a gated frame or field is sent only if both `hello` lists name it. Absent means the old behaviour, and a v1 worker keeps working when the server adds one. Criterion 11 is tested with a fake server and a fake worker.
+- **Baseline:** every v1 worker must advertise `blobs.v1`. Since N6, the server offers remote jobs only to workers that also advertise `gittoken.v1` (§14). Future additions (`sse_log`, `codex_adapter`, `multi_job`, …) are new capabilities.
+
+## 11. Security and limits
+
+**Org boundary:**
+- Every server read or write of a job, spec, blob, control or lease checks: worker's org = job's org, and lease holder = this worker.
+- A mismatch is `not_owner` or 404, never data.
+
+**Tokens:**
+- `dd_wjn_`, `dd_wrk_` and `dd_wjt_` are stored as SHA-256 only, and every mint is audited (A3 pattern).
+- Neither side may log the `enrolled`, `rotated`, `offer`, `lease` or `control` frames' `credential` or `job_token` fields.
+- Those fields never enter the spool.
+
+**Agent children:**
+- They never get the worker credential, a job token, the spool or another job's secrets.
+- On top of that: agentadapter `ChildEnv` plus the deny set in §6.6.
+
+**Limits:**
+- 1000 frames per minute per socket;
+- at most 3 unauthenticated sockets per IP;
+- enrolment: 10 per IP per hour;
+- upgrades: 30 per credential per minute;
+- blob `PUT`s: 600 per job token per hour, plus §7's per-job caps.
+
+**Per-IP rule:** "per IP" uses the trusted-proxy rule (`TRUSTED_PROXY_CIDRS`), so a client can't spoof `X-Forwarded-For`.
+
+**Grep test:** criterion 10's grep covers the spool, `agent.log`, events and the worker's journal after a test-account run.
+
+## 12. Acceptance additions for W2 (from this contract)
+
+1. A `done` sent just before a socket drop is applied after the reconnect (spool replay with a re-attach).
+2. A server restart of 90 s mid-job: the job re-attaches and finishes.
+3. A socket drop after a `ship` push: the retry returns the stored result, and exactly one PR exists.
+4. A rotation with the ack lost and a re-sent rotation: the worker can still authenticate, and the old credential is revoked within 7 days.
+5. Path-traversal ids and filenames (`..`, absolute, NUL) are refused on both sides, and nothing is written outside the job dir.
+6. A spec asking for a looser sandbox, a higher cap, a disallowed adapter, an `ext::` repo URL, or verify without `allow_verify_commands` is narrowed or refused as in §6.5.
+7. An SVG or a mismatched-type blob is rejected 415.
+
+## 13. Decisions at freeze (the maintainers, 2026-11-15)
+
+1. **Adapter order** when the app's agent is empty: each host's `policy.adapters` order, default `claude, grok, codex, antigravity`.
+2. **`allow_ship` defaults to `false`** in `policy.toml`: no Create PRs from a Pi until its owner opts in.
+
+## 14. GitHub App repo access (`gittoken.v1`, N6)
+
+Approved 2026-11-17 (`github-app.md` (a control-plane design doc, not published)). This replaces D1/D2 (host `git`/`gh` login) for remote jobs.
+
+**Capability.** The worker lists `gittoken.v1` in `hello.capabilities`, and the server lists it in `hello_ok.capabilities` when the GitHub App is configured.
+- The server offers remote jobs only to a worker with it.
+- A worker whose server lacks it declines offers with `bad_spec`. The `decline` frame has no detail field, so the reason `server lacks gittoken.v1` goes to the worker's log only.
+
+**Token endpoint.** `POST /worker/v1/jobs/{job_id}/git-token`, with `Authorization: Bearer dd_wjt_…` (the job token, §5.4). The lease must be live and the org must match.
+
+- **Request:** `{"repo":"<repo entry name>","access":"read"|"write"}`.
+- **Response 200:** `{"token":"ghs_…","expires_at":"<RFC3339>","url":"https://github.com/<owner>/<repo>"}`, with `Cache-Control: no-store`.
+- **Rules:**
+  - `repo` must be one of this job's repos, else 403.
+  - `write` is allowed only while a `ship` control naming that repo is unanswered for this job, and never for `kind:"test_run"`, else 403.
+  - The token is a GitHub App installation token narrowed to that one repo, with `contents: read|write` and `metadata: read`, for about an hour.
+  - The server stores nothing.
+  - 60 mints per job per hour, else 429.
+- **Errors:**
+  - 409 `github_app_not_configured`, `github_not_installed` or `repo_not_installed`;
+  - 502 `github_unavailable`;
+  - 401 when the lease isn't live.
+- **Audit:** `git_token.mint` with job, repo and access, never the token.
+
+**Worker rules.**
+- **Fetching:** the worker fetches a token right before a remote git command: `read` for clone and fetch, `write` for push. It may reuse a token until 5 minutes before `expires_at`.
+- **Where a token may live:** only in memory. It is added to the redactor before first use. It never appears in the spec, `meta.json`, the spool, a `control_result`, an event, a log or `.git/config`.
+- **How git gets it:** through per-command `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` env, never argv. Three entries:
+  - `credential.helper` = empty, which resets host helpers;
+  - `http.https://github.com/.extraheader` = empty, which drops any header the host config sets for that origin;
+  - `http.https://github.com/.extraheader` = `Authorization: Basic base64(x-access-token:<token>)`.
+- **Also set for these commands:** `GIT_TERMINAL_PROMPT=0`, so a refused token fails instead of prompting, and `GIT_ALLOW_PROTOCOL=https`, so a host `url.*.insteadOf` rewrite to ssh or file fails instead of using another credential.
+- **Where it runs:** only in the worker's own clone, never with `-C` on an agent-writable worktree, so a rewritten `.git` in the worktree can't redirect the token.
+- **What else git loses:** host `GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_ENTERPRISE_TOKEN`, `SSH_AUTH_SOCK`, `SSH_ASKPASS`, `GIT_ASKPASS` and `GIT_CONFIG_PARAMETERS` are removed from these commands' env.
+- **Agent children** (agent, reviewer, verify) never receive the token.
+- **Errors:** git failure text is redacted before it reaches a `control_result` or the job log. A clone, fetch or push auth failure ends the job, or fails that repo's ship entry, with reason `repo_auth: <repo>`. It is never swallowed.
+
+**Ship result** (`gittoken.v1`):
+
+```json
+{"repos":[{"repo":"webapp","branch":"dd/bjob_…/webapp","base":"main","pushed":true,"head_sha":"<40 hex>","error":""}]}
+```
+
+The server then opens or updates the PR per repo:
+- **Lookup:** `GET /repos/{o}/{r}/pulls?head=<o>:<branch>&base=<base>&state=all`, then `POST /repos/{o}/{r}/pulls` only when there is none.
+- **Recording:** the result goes in `job.prs[]` (`kind:"pr"`, `repo`, `branch`, `base`, `url`, `ghNumber`, `ghState`, `status`, `error`), as before.
+- **A repo with `pushed:false`** gets no PR call. It is recorded with `status:"skipped"` when its `error` is `no commits ahead of base`, else `status:"failed"` with the worker's (redacted) error, the same words as the local path.
+
+Idempotency stays as in §6.3. A redelivered `ship` is answered from the stored result, and the server's PR lookup prevents a second PR.
+
+**Readiness.** With `gittoken.v1` the worker's `tools` lists `git` only (reasons `missing`, `too_old`). The server still accepts `gh` entries and the reasons `signed_out`/`no_git_helper` from older workers (display only).
+

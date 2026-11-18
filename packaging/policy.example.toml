@@ -1,0 +1,33 @@
+# dd-worker host policy. Copy to /etc/dd-worker/policy.toml (root:root 0644)
+# and edit. The worker refuses a policy that is not root-owned or is group- or
+# world-writable, and declines every job while the file is missing or invalid.
+# `dd-worker status` prints how the worker reads it.
+
+# Master switch: false declines every offer.
+enabled = true
+
+# Orgs whose jobs this host takes (Defect Drainer org ids). Required.
+orgs = ["more-than-code"]
+
+# Coding agents this host runs. pi hosts run Claude with an API key
+# (secrets.env); grok and antigravity are not supported on workers yet.
+adapters = ["claude"]
+
+# Repos this host may work on; leave unset to allow any repo the org sends.
+# repos = [
+#   "https://github.com/more-than-code/example-app",
+# ]
+
+# The weakest sandbox a job may ask for: "read-only", "strict" or "workspace".
+min_sandbox = "workspace"
+
+# Per-job limits.
+max_turns = 80
+max_wall_sec = 2700
+max_jobs = 1
+
+# Run the app's verify commands on this host. They are not sandboxed: keep off.
+allow_verify_commands = false
+
+# Push the job branch when the operator ships (serve opens the PR).
+allow_ship = true

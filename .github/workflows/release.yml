@@ -1,0 +1,174 @@
+# dd-worker release: a pushed tag vX.Y.Z on a commit that is on main → the
+# CI gates → `make worker-dist` + the install.sh container test → a GitHub
+# Release with the three tarballs, SHA256SUMS and install.sh. A tag with a
+# -pre suffix (v0.2.0-rc1) is a pre-release. The tag is both the Go module
+# version and the release; the binary's version is the tag without the v.
+# This workflow never deploys.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The tag must be a plain version and its commit must be on main; anything
+  # else stops here, before any build or credential.
+  check:
+    if: github.repository == 'more-than-code/defect-drainer-worker'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the tag and that its commit is on main
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)$ ]]; then
+            echo "::error::tag is not vX.Y.Z or vX.Y.Z-pre"
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$TAG ($GITHUB_SHA) is not on main: no release"
+            exit 1
+          fi
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          {
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+  # The same gates as ci.yml. Keep the two in step when either changes.
+  gates:
+    needs: check
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: go vet and gofmt
+        run: make vet
+      - name: go test (race)
+        run: go test ./... -race -count=1 -timeout 25m
+      - name: Tidy grep
+        run: make tidy-check
+
+  build:
+    needs: [check, gates]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: make worker-dist
+        env:
+          WORKER_VERSION: ${{ needs.check.outputs.version }}
+          WORKER_RELEASE_BASE: https://github.com/more-than-code/defect-drainer-worker/releases/download
+        run: make worker-dist
+      - name: Check the assets
+        env:
+          WORKER_VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS
+          for p in linux_arm64 linux_amd64 darwin_arm64; do
+            test -f "dd-worker_${WORKER_VERSION}_${p}.tar.gz"
+          done
+          tar -xzf "dd-worker_${WORKER_VERSION}_linux_amd64.tar.gz" -C "$RUNNER_TEMP" dd-worker LICENSE
+          got=$("$RUNNER_TEMP/dd-worker" version)
+          [ "$got" = "$WORKER_VERSION" ] || { echo "::error::dd-worker version is $got, want $WORKER_VERSION"; exit 1; }
+          grep -q 'Apache License' "$RUNNER_TEMP/LICENSE" || { echo "::error::the tarball's LICENSE is not Apache-2.0"; exit 1; }
+      # install.sh in throwaway podman debian:bookworm containers (amd64 here).
+      - name: install.sh container test
+        run: make worker-package-test
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: worker-dist-${{ needs.check.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  # The only job with contents: write. It runs no code from the repository.
+  release:
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: worker-dist-${{ needs.check.outputs.version }}
+          path: dist
+      - name: Verify the downloaded assets
+        run: cd dist && sha256sum -c SHA256SUMS
+      # The tag could have been moved or main rewritten since the check job:
+      # the tag must still point at the commit that was built, and that commit
+      # must still be on main.
+      - name: Re-check the tag's commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          read -r type sha < <(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')
+          if [ "$type" = tag ]; then
+            sha=$(gh api "repos/$GH_REPO/git/tags/$sha" --jq '.object.sha')
+          fi
+          if [ "$sha" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG now points at $sha, not the built $GITHUB_SHA: no release"
+            exit 1
+          fi
+          status=$(gh api "repos/$GH_REPO/compare/$GITHUB_SHA...main" --jq '.status')
+          case "$status" in
+          ahead | identical) ;;
+          *) echo "::error::$GITHUB_SHA is no longer on main ($status): no release"; exit 1 ;;
+          esac
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.check.outputs.version }}
+          PRERELEASE: ${{ needs.check.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          flags=(--verify-tag --title "dd-worker $VERSION" \
+            --notes "dd-worker $VERSION, built from commit $GITHUB_SHA. Install: download install.sh, then \`sudo sh install.sh install $VERSION\` (docs/host-setup.md). Verify assets with \`sha256sum -c SHA256SUMS\`.")
+          [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+          gh release create "$TAG" "${flags[@]}" \
+            dist/dd-worker_"$VERSION"_*.tar.gz dist/SHA256SUMS dist/install.sh
+          {
+            echo "### dd-worker $VERSION released from $GITHUB_SHA"
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
