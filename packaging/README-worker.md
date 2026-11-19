@@ -55,6 +55,15 @@ same release, refuses the tarball if its SHA-256 does not match, and sets up:
 | `/home/dd-worker` | dd-worker : 0700 | an empty HOME |
 | `/etc/systemd/system/dd-worker.service` | root : 0644 | the hardened unit |
 
+The worker reads `secrets.env` itself when it starts; the unit has no
+`EnvironmentFile`, so the key never sits in the service's environment.
+`install.sh secrets` restarts the service after writing it.
+
+Claude Code is never updated by the worker: every agent run gets
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which turns Claude Code's
+auto-updater off, and `/usr/local/bin` is read-only to the service. Update
+Claude Code yourself, as root.
+
 It creates the `dd-worker` system user, and never overwrites an existing
 `policy.toml`.
 
@@ -89,6 +98,9 @@ In the console, Settings -> Workers -> Add worker creates a one-time join token
 ```sh
 sudo sh install.sh enroll https://<your-server>
 ```
+
+For Defect Drainer's hosted service the origin is `https://api.defectdrainer.com`
+(the API host; the console at `console.defectdrainer.com` does not accept workers).
 
 Paste the token at the hidden prompt (or pipe it on stdin). This runs
 `dd-worker init` as the `dd-worker` user, which writes the credential to
