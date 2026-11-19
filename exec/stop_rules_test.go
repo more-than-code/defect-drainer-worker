@@ -90,38 +90,62 @@ func TestBlockedReason(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, ok := BlockedReason(dir, timeZero, time.Time{}); ok {
+	if _, ok := BlockedReason(dir, timeZero, "absent"); ok {
 		t.Fatal("no NOTES.md, yet blocked")
 	}
 	write("plan\nBLOCKED:\n  BLOCKED:   npm install is refused: no network \x07\nBLOCKED: second\n")
-	r, ok := BlockedReason(dir, timeZero, time.Time{})
+	r, ok := BlockedReason(dir, timeZero, "absent")
 	if !ok || r != "npm install is refused: no network" {
 		t.Fatalf("reason %q, %v", r, ok)
 	}
 	write("BLOCKED: " + strings.Repeat("é", 300))
-	if r, _ := BlockedReason(dir, timeZero, time.Time{}); len([]rune(r)) != 200 {
+	if r, _ := BlockedReason(dir, timeZero, "absent"); len([]rune(r)) != 200 {
 		t.Fatalf("reason not cut to 200: %d", len([]rune(r)))
 	}
 	write("    BLOCKED: <reason>\nBLOCKED: \u202edir\n")
-	if r, ok := BlockedReason(dir, timeZero, time.Time{}); !ok || r != "dir" {
+	if r, ok := BlockedReason(dir, timeZero, "absent"); !ok || r != "dir" {
 		t.Fatalf("placeholder or format char: %q %v", r, ok)
 	}
 	write("BLOCKED: <reason>\n")
-	if _, ok := BlockedReason(dir, timeZero, time.Time{}); ok {
+	if _, ok := BlockedReason(dir, timeZero, "absent"); ok {
 		t.Fatal("the brief's placeholder counted")
 	}
 	write("UNFIXED: DEF-1\nnot BLOCKED: here\n")
-	if _, ok := BlockedReason(dir, timeZero, time.Time{}); ok {
+	if _, ok := BlockedReason(dir, timeZero, "absent"); ok {
 		t.Fatal("a mid-line BLOCKED: counted")
 	}
-	// A line written before this run's loop started does not count.
-	write("BLOCKED: stale\n")
+	// Freshness is content, not mtime (PR #3 CI: Linux mtimes lag
+	// time.Now). An unchanged line from before the run does not count.
+	write("plan\nBLOCKED: stale\n")
+	start := NotesDigest(dir, timeZero)
+	if _, ok := BlockedReason(dir, timeZero, start); ok {
+		t.Fatal("an unchanged BLOCKED: line from before the run counted")
+	}
+	// The old line plus any other change counts.
+	write("plan\nBLOCKED: stale\nmore\n")
+	if r, ok := BlockedReason(dir, timeZero, start); !ok || r != "stale" {
+		t.Fatalf("changed notes with the old line: %q %v", r, ok)
+	}
+	// A fresh line whose mtime is an hour before the start counts.
+	write("plan\n")
+	start = NotesDigest(dir, timeZero)
+	write("plan\nBLOCKED: npm refused\n")
 	old := time.Now().Add(-time.Hour)
 	if err := os.Chtimes(notes, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := BlockedReason(dir, timeZero, time.Now().Add(-time.Minute)); ok {
-		t.Fatal("a stale BLOCKED: line counted")
+	if r, ok := BlockedReason(dir, timeZero, start); !ok || r != "npm refused" {
+		t.Fatalf("a backdated new line: %q %v", r, ok)
+	}
+	// Absent at the start, then a line: counts.
+	_ = os.Remove(notes)
+	start = NotesDigest(dir, timeZero)
+	if start != "absent" {
+		t.Fatalf("digest of a missing NOTES.md = %q", start)
+	}
+	write("BLOCKED: new\n")
+	if r, ok := BlockedReason(dir, timeZero, start); !ok || r != "new" {
+		t.Fatalf("absent at start: %q %v", r, ok)
 	}
 	// A symlinked NOTES.md is refused like harvest refuses it.
 	_ = os.Remove(notes)
@@ -130,7 +154,7 @@ func TestBlockedReason(t *testing.T) {
 	if err := os.Symlink(target, notes); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := BlockedReason(dir, timeZero, time.Time{}); ok {
+	if _, ok := BlockedReason(dir, timeZero, "absent"); ok {
 		t.Fatal("a symlinked NOTES.md counted")
 	}
 }

@@ -414,6 +414,9 @@ func (r *run) start() (Outcome, error) {
 		return Outcome{}, nil
 	}
 
+	// NOTES.md as it stands before the agent's first turn: a BLOCKED: line
+	// counts only once the content changes (BlockedReason).
+	notesAtStart := NotesDigest(handoff, r.harvestCutoff())
 	cmd, flush, err := startIter(false, s.ResumeSession)
 	if err != nil {
 		return Outcome{}, err
@@ -477,7 +480,7 @@ func (r *run) start() (Outcome, error) {
 
 			complete, miss := r.complete(cutoff)
 			missing = miss
-			reason, blocked := BlockedReason(handoff, cutoff, loopStart)
+			reason, blocked := BlockedReason(handoff, cutoff, notesAtStart)
 			fp := ProgressFingerprint(handoff, wts)
 			noProgress := iter >= 2 && fp == prevFP && slices.Equal(missing, prevMissing)
 			prevFP, prevMissing = fp, missing

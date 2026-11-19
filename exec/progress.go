@@ -139,20 +139,36 @@ func statusPaths(out string) []string {
 // blockedReasonMax caps agentRun.stopReason.
 const blockedReasonMax = 200
 
-// BlockedReason is the reason on the first `BLOCKED: <reason>` line of
-// NOTES.md. NOTES.md is read like harvest reads it (cutoff is the job's
-// harvest cutoff) and counts only when it was modified at or after
-// modifiedSince (this run's loop start), so a line left from before a Resume
-// does not stop the resumed run. The reason is the agent's text: control
-// characters are dropped and it is cut to 200 characters. ok is false when
-// there is no such line.
-func BlockedReason(handoff string, cutoff, modifiedSince time.Time) (reason string, ok bool) {
+// NotesDigest is NOTES.md's content as the loop sees it: its SHA-256, or
+// "absent" or "unreadable". It is read like harvest reads it (cutoff is the
+// job's harvest cutoff). The loop takes it before iteration 1 spawns.
+func NotesDigest(handoff string, cutoff time.Time) string {
 	p := filepath.Join(handoff, "NOTES.md")
-	if fi, err := os.Lstat(p); err != nil || fi.ModTime().Before(modifiedSince) {
-		return "", false
+	if _, err := os.Lstat(p); err != nil {
+		return "absent"
 	}
 	data, _, read := ReadRegularFile(handoff, p, cutoff)
 	if !read {
+		return "unreadable"
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// BlockedReason is the reason on the first `BLOCKED: <reason>` line of
+// NOTES.md. It counts only when NOTES.md's content differs from startDigest
+// (NotesDigest before this run's first iteration), so a line left from
+// before a Resume or Rerun does not stop that run at once. Content, not
+// mtime: Linux stamps mtimes from a coarse clock that lags time.Now (PR #3
+// CI). The reason is the agent's text: control characters are dropped and
+// it is cut to 200 characters. ok is false when there is no such line.
+func BlockedReason(handoff string, cutoff time.Time, startDigest string) (reason string, ok bool) {
+	p := filepath.Join(handoff, "NOTES.md")
+	data, _, read := ReadRegularFile(handoff, p, cutoff)
+	if !read {
+		return "", false
+	}
+	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) == startDigest {
 		return "", false
 	}
 	for _, line := range strings.Split(string(data), "\n") {
