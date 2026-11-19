@@ -13,7 +13,8 @@ orgs = ["more-than-code"]
 # (secrets.env); grok and antigravity are not supported on workers yet.
 adapters = ["claude"]
 
-# Repos this host may work on; leave unset to allow any repo the org sends.
+# Repos this host may work on. Unset or empty means no repo: the worker
+# declines every job until you list the repos here.
 # repos = [
 #   "https://github.com/more-than-code/example-app",
 # ]

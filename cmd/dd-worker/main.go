@@ -97,7 +97,7 @@ func cmdInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	p := pathFlags(fs)
-	server := fs.String("server", "", "server origin, e.g. https://defectdrainer.com")
+	server := fs.String("server", "", "server origin, e.g. https://api.defectdrainer.com")
 	fromStdin := fs.Bool("join-token-stdin", false, "read the dd_wjn_ join token from stdin (required)")
 	insecure := fs.Bool("insecure-dev", false, "allow http://127.0.0.1 (the Mac dev loop with AUTH=none)")
 	machineID := fs.String("machine-id-file", "", "machine id file (default /etc/machine-id)")

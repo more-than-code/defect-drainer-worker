@@ -3,7 +3,7 @@
 The Defect Drainer worker that runs on your machine is open source (Apache-2.0).
 
 `dd-worker` runs Defect Drainer coding-agent jobs on a host you own. It connects
-out to your Defect Drainer server (defectdrainer.com or your own), takes only the
+out to your Defect Drainer server (`https://api.defectdrainer.com`, or your own server's API origin), takes only the
 jobs your local policy allows, runs your coding agent in a per-job sandbox, and
 pushes the job's branch when an operator ships it. This repository holds the
 worker, its install script and release tooling, and the protocol it speaks. The
