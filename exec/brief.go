@@ -122,6 +122,12 @@ type BatchFixBriefInput struct {
 	DefectsRoot string
 	GrokSandbox string
 	Worktrees   []git.WorktreeBinding
+	// AllowedDomains are the hosts the agent's sandbox may reach; nil
+	// writes no network section (grok, local serve without a list).
+	AllowedDomains []string
+	// NoNetwork says the agent's sandbox has no network at all (a
+	// non-grok adapter with no allowed hosts).
+	NoNetwork bool
 }
 
 // BuildBatchFixBrief ports backend/src/batches.ts buildBatchFixBrief.
@@ -155,6 +161,7 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 		"| Defects in scope | exactly the ids listed below |",
 		"| Sandbox profile | **"+sandbox+"** (App Settings) |",
 		"| Branch | the worktree branch already checked out — do not create another |",
+		"| Commits | none: leave changes uncommitted; DD commits them when the operator ships |",
 		"| Verification | operator-authored commands, re-run by DD after you exit; you may not add or edit them |",
 		"| Worker ledger | `NOTES.md` + `fix-notes/`, never `tasks/todo.md` |",
 		"",
@@ -163,6 +170,26 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 		"- Do not re-scaffold Flutter and do not clone a second SDK.",
 		"- Package installs: if the sandbox blocks a cache write, stop and record it in `NOTES.md`.",
 		"  Do not overlay-symlink `~/fvm` or any other toolchain root to work around it.",
+	)
+	switch {
+	case len(input.AllowedDomains) > 0:
+		lines = append(lines,
+			"- Network: only "+strings.Join(input.AllowedDomains, ", ")+" is reachable from the sandbox.",
+			"  Use `--ignore-scripts` (or the package manager's equivalent) where it allows it.",
+		)
+	case input.NoNetwork:
+		lines = append(lines, "- Network: none. A step that needs it fails: record it as `BLOCKED:` (below).")
+	}
+	lines = append(lines,
+		"",
+		"## Stopping early",
+		"If something outside your control blocks the work (a refused path, no network, a missing",
+		"tool), write a full line in `NOTES.md`:",
+		"",
+		"    BLOCKED: <reason>",
+		"",
+		"Defect Drainer stops the loop after that iteration and shows the reason to the operator.",
+		"Do not retry around the blocker. Delete the line once it is gone.",
 		"",
 		"## Deliverables",
 		"- `NOTES.md` — plan, decisions, departures, anything you could not verify.",

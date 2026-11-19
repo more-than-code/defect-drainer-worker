@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -43,6 +44,15 @@ type Host struct {
 	EnvFiles []string
 	// DefectsRoot is the inventory root whose evidence an agent may not read.
 	DefectsRoot string
+	// ReadOnly are paths every agent of the job (implementer and reviewers)
+	// may read but never edit. A worker sets the job's repo clone .git dirs
+	// and its per-job report evidence; local serve sets none. A DenyRead
+	// entry equal to or inside one of them is dropped; an ancestor stays
+	// denied and the adapter re-allows only these paths.
+	ReadOnly []string
+	// AllowedDomains are the hosts the implementer's sandbox may reach
+	// (empty: no network).
+	AllowedDomains []string
 }
 
 // AgentAdapter is the host's adapter.
@@ -100,13 +110,25 @@ func (h Host) DenyRead() []string {
 	var clean []string
 	seen := map[string]bool{}
 	for _, p := range out {
-		if p == "" || !filepath.IsAbs(p) || seen[filepath.Clean(p)] {
+		if p == "" || !filepath.IsAbs(p) || seen[filepath.Clean(p)] || within(p, h.ReadOnly) {
 			continue
 		}
 		seen[filepath.Clean(p)] = true
 		clean = append(clean, filepath.Clean(p))
 	}
 	return clean
+}
+
+// within reports whether p is one of dirs or inside one.
+func within(p string, dirs []string) bool {
+	p = filepath.Clean(p)
+	for _, d := range dirs {
+		d = filepath.Clean(d)
+		if d != "" && (p == d || strings.HasPrefix(p, d+string(filepath.Separator))) {
+			return true
+		}
+	}
+	return false
 }
 
 // CredentialFor is the host credential with a per-job config dir when the

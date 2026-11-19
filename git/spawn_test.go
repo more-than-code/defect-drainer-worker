@@ -288,7 +288,10 @@ func TestStartCodingAgentMarksWorkerRole(t *testing.T) {
 		"BRIEF.md, PROCESS.md,",
 		"SKILLS.md",
 		"security-baseline, coding-discipline, code-quality and testing-strategy",
-		"Do not push",
+		// F6: agents leave changes uncommitted; DD commits on ship.
+		"Leave your changes uncommitted",
+		"Do not commit, push or switch branches.",
+		"BLOCKED: <reason>",
 		"the operator starting this batch IS the approval",
 	} {
 		if !strings.Contains(s, want) {

@@ -25,6 +25,13 @@ const (
 	DefaultMaxJobs    = 1
 	MaxMaxJobs        = 16
 	MaxMaxTurns       = 1000
+	// MaxAllowedDomains bounds agent_allowed_domains; MaxMaxCostUSD bounds
+	// max_cost_usd, the same ceiling the server puts on its own cap.
+	MaxAllowedDomains = 16
+	MaxMaxCostUSD     = 100
+	// DefaultAgentMaxCostUSD is the per-job cost cap when neither the server
+	// nor this policy sets one (spec D5).
+	DefaultAgentMaxCostUSD = 5
 )
 
 // KnownAdapters are the adapter names a policy may list (§5.1, Q4).
@@ -41,6 +48,8 @@ var policySchema = policy.Schema{
 	"max_jobs":              policy.Int,
 	"allow_verify_commands": policy.Bool,
 	"allow_ship":            policy.Bool,
+	"agent_allowed_domains": policy.Strings,
+	"max_cost_usd":          policy.Int,
 }
 
 // Policy is /etc/dd-worker/policy.toml as the worker enforces it. When
@@ -60,6 +69,11 @@ type Policy struct {
 	MaxJobs             int
 	AllowVerifyCommands bool
 	AllowShip           bool
+	// AllowedDomains are the exact hosts an agent's sandbox may reach
+	// (empty: no network). MaxCostUSD lowers the server's per-job cost cap
+	// (0: unset). Whole dollars: the policy file has no decimals.
+	AllowedDomains []string
+	MaxCostUSD     int
 
 	repoPatterns []repoURL
 }
@@ -94,6 +108,14 @@ func LoadPolicy(path string, skipOwner bool, uid func(os.FileInfo) (uint32, bool
 	p.MaxJobs = intOr(v, "max_jobs", DefaultMaxJobs)
 	p.AllowVerifyCommands = v["allow_verify_commands"].Bool
 	p.AllowShip = v["allow_ship"].Bool
+	p.AllowedDomains = v["agent_allowed_domains"].Strings
+	if c, ok := v["max_cost_usd"]; ok {
+		if c.Int < 1 { // 0 would read as unset
+			p.Reason = "bad_max_cost_usd"
+			return p
+		}
+		p.MaxCostUSD = c.Int
+	}
 	if reason := p.check(); reason != "" {
 		p.Reason = reason
 		return p
@@ -141,6 +163,12 @@ func (p *Policy) check() string {
 	if p.MaxJobs < 1 || p.MaxJobs > MaxMaxJobs {
 		return "bad_max_jobs"
 	}
+	if !validDomains(p.AllowedDomains) {
+		return "bad_agent_allowed_domains"
+	}
+	if p.MaxCostUSD < 0 || p.MaxCostUSD > MaxMaxCostUSD {
+		return "bad_max_cost_usd"
+	}
 	p.repoPatterns = nil
 	for _, r := range p.Repos {
 		u, err := canonicalRepo(r, true)
@@ -150,6 +178,39 @@ func (p *Policy) check() string {
 		p.repoPatterns = append(p.repoPatterns, u)
 	}
 	return ""
+}
+
+// domainLabel is one lowercase DNS label.
+var domainLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// validDomains checks agent_allowed_domains: at most MaxAllowedDomains
+// exact, lowercase hostnames of two or more labels, no duplicates. No
+// wildcard, IP address or port can pass the label check, and a last label
+// of digits only (an IPv4 address) is refused.
+func validDomains(ds []string) bool {
+	if len(ds) > MaxAllowedDomains {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, d := range ds {
+		if len(d) == 0 || len(d) > 253 || seen[d] {
+			return false
+		}
+		seen[d] = true
+		labels := strings.Split(d, ".")
+		if len(labels) < 2 {
+			return false
+		}
+		for _, l := range labels {
+			if !domainLabel.MatchString(l) {
+				return false
+			}
+		}
+		if strings.Trim(labels[len(labels)-1], "0123456789") == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func known(a string) bool {

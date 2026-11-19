@@ -105,6 +105,10 @@ type Task struct {
 	// AllowCommands are binaries the agent's shell may run, for CLIs that
 	// allow-list commands (agy). git is always added.
 	AllowCommands []string
+	// AllowedDomains are the exact hosts the agent's sandboxed shell may
+	// reach (the worker's agent_allowed_domains). Empty: no network.
+	// Implementer only; adapters without a network rule ignore it.
+	AllowedDomains []string
 	// Grok-only switches the caller read from its env.
 	GrokBypassPermissions bool
 	GrokTools             string

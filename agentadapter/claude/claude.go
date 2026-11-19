@@ -51,6 +51,15 @@ func (a *Adapter) CredentialEnv() []string {
 	return []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"}
 }
 
+// sandboxNetworkKey and allowedDomainsKey name the sandbox's network
+// allow list in the settings file: {"sandbox": {"network": {"allowedDomains":
+// [...]}}}. Unconfirmed against the CLI until probe P1 (remote-job-fixes
+// spec §8); change them here and nowhere else.
+const (
+	sandboxNetworkKey = "network"
+	allowedDomainsKey = "allowedDomains"
+)
+
 // settings is the per-job --settings file.
 type settings struct {
 	Permissions struct {
@@ -101,6 +110,9 @@ func abs(p string) string { return "/" + filepath.Clean(p) }
 //   - t.ReadOnly paths are readable like the agent's own dirs (Read allow and
 //     the allowRead re-allow) but never editable. A reviewer's cwd is its lens
 //     dir, so this is how it reads the job's BRIEF.md and fix-notes (Phase 2).
+//     On a worker it is also the job's clone .git and report evidence;
+//   - the implementer's sandboxed shell may reach t.AllowedDomains, and
+//     nothing else; with none, the file has no network block at all.
 //
 // The reviewer gets the same file without any Edit allow.
 func Settings(t aa.Task) ([]byte, error) {
@@ -151,7 +163,45 @@ func Settings(t aa.Task) ([]byte, error) {
 	s.Sandbox.AutoAllowBashIfSandboxed = true
 	s.Sandbox.AllowUnsandboxedCommands = false
 	s.Sandbox.FailIfUnavailable = true
-	return json.MarshalIndent(s, "", "  ")
+	if t.Role != aa.Implementer || len(t.AllowedDomains) == 0 {
+		return json.MarshalIndent(s, "", "  ")
+	}
+	return withAllowedDomains(s, t.AllowedDomains)
+}
+
+// withAllowedDomains marshals s with the sandbox network allow list added
+// under the keys probe P1 confirms.
+func withAllowedDomains(s settings, domains []string) ([]byte, error) {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	m["sandbox"][sandboxNetworkKey] = map[string][]string{allowedDomainsKey: append([]string(nil), domains...)}
+	return json.MarshalIndent(m, "", "  ")
+}
+
+// allowedTools is the --allowedTools value: the settings file's allow list,
+// so the CLI's permission mode has the same rules on its command line. A
+// rule containing a comma would split, so it is refused.
+func allowedTools(t aa.Task) (string, error) {
+	body, err := Settings(t)
+	if err != nil {
+		return "", err
+	}
+	var s settings
+	if err := json.Unmarshal(body, &s); err != nil {
+		return "", err
+	}
+	for _, r := range s.Permissions.Allow {
+		if strings.Contains(r, ",") {
+			return "", fmt.Errorf("claude: allow rule %q contains a comma", r)
+		}
+	}
+	return strings.Join(s.Permissions.Allow, ","), nil
 }
 
 // containsAny reports whether dir is one of dirs or an ancestor of one.
@@ -208,6 +258,11 @@ func (a *Adapter) Command(t aa.Task) (aa.Command, error) {
 	for _, w := range t.Worktrees {
 		args = append(args, "--add-dir", w)
 	}
+	tools, err := allowedTools(t)
+	if err != nil {
+		return aa.Command{}, err
+	}
+	args = append(args, "--allowedTools", tools)
 	if t.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(t.MaxTurns))
 	}

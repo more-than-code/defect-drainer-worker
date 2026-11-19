@@ -94,8 +94,9 @@ func (h *hostAdapter) keep() []string {
 	return []string{h.keyName}
 }
 
-// host is the exec.Host for a job of this adapter.
-func (h *hostAdapter) host(p Paths, jobID, model string) exec.Host {
+// host is the exec.Host for a job of this adapter. wts are the job's
+// bindings after setup; domains is policy agent_allowed_domains.
+func (h *hostAdapter) host(p Paths, jobID, model string, wts []git.WorktreeBinding, domains []string) exec.Host {
 	return exec.Host{
 		DataRoot:        p.StateDir,
 		Adapter:         h.forJob(model),
@@ -105,9 +106,34 @@ func (h *hostAdapter) host(p Paths, jobID, model string) exec.Host {
 		// its credential (env, env.prev), the clones or the stored control
 		// results. exec adds {state}/jobs (other jobs, spools, blobs) and
 		// agent-state.
-		EnvFiles:    append([]string{p.ConfigDir, p.CredentialDir(), p.ReposDir(), p.ControlsDir()}, homeCredentialFiles()...),
-		DefectsRoot: p.Evidence(jobID),
+		EnvFiles:       append([]string{p.ConfigDir, p.CredentialDir(), p.ReposDir(), p.ControlsDir()}, homeCredentialFiles()...),
+		DefectsRoot:    p.Evidence(jobID),
+		ReadOnly:       jobReadOnly(p, jobID, wts),
+		AllowedDomains: domains,
 	}
+}
+
+// jobReadOnly is what every agent of a job may read but not edit (spec
+// §4.1 items 2 and 5): each repo clone's .git, so git works in a worktree
+// whose .git file points into the clone, and this job's report evidence.
+// The clone path is the worker's own (RepoClone of the canonical URL), never
+// read from wt/.git, which the agent can rewrite. {state}/repos and
+// {state}/jobs stay denied; the adapter re-allows only these paths.
+func jobReadOnly(p Paths, jobID string, wts []git.WorktreeBinding) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, b := range wts {
+		canon, err := CanonicalRepoURL(b.RepoURL)
+		if err != nil {
+			continue
+		}
+		d := filepath.Join(p.RepoClone(canon), ".git")
+		if !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	return append(out, p.Evidence(jobID))
 }
 
 // homeCredentialFiles are credential files in the worker user's HOME that

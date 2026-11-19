@@ -109,7 +109,7 @@ func TestRotationWithReadOnlyConfigDir(t *testing.T) {
 func TestCredentialDirDeniedToAgent(t *testing.T) {
 	p := Paths{ConfigDir: "/etc/dd-worker", StateDir: "/var/lib/dd-worker"}
 	h := &hostAdapter{}
-	host := h.host(p, "bjob_x", "")
+	host := h.host(p, "bjob_x", "", nil, nil)
 	found := false
 	for _, f := range host.EnvFiles {
 		if f == "/var/lib/dd-worker/credential" {

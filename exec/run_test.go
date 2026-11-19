@@ -28,6 +28,8 @@ func TestEmitRedactsTheSecret(t *testing.T) {
 	_ = r.emit(Event{Kind: EventLog, Lines: []LogLine{{Text: "typed " + secret, Level: "info", Source: "Grok"}}})
 	_ = r.emit(Event{Kind: EventStatus, Status: &Status{Phase: PhaseAgentExit, Failed: true, Error: "login failed for " + secret}, Lines: []LogLine{guarded("agent said "+secret, "error")}})
 	_ = r.emit(Event{Kind: EventDone, Done: &Done{State: "failed", Line: secret}})
+	// RF-a: a BLOCKED: reason is agent-authored too.
+	_ = r.emit(Event{Kind: EventAgentRun, AgentRun: &AgentRun{StoppedBy: StoppedByBlocked, StopReason: "login with " + secret + " refused"}})
 	raw, err := json.Marshal(sink.events)
 	if err != nil {
 		t.Fatal(err)

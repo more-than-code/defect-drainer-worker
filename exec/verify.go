@@ -48,6 +48,9 @@ type VerificationRun struct {
 	Results    []VerifyResult `json:"results"`
 	StartedAt  string         `json:"startedAt"`
 	FinishedAt string         `json:"finishedAt"`
+	// SkippedReason says why verification did not run when it was
+	// configured ("host policy"). Additive.
+	SkippedReason string `json:"skippedReason,omitempty"`
 }
 
 const (

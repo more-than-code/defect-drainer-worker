@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/more-than-code/defect-drainer-worker/agentadapter"
 	"github.com/more-than-code/defect-drainer-worker/agentadapter/grok"
@@ -84,15 +86,44 @@ func SandboxHeadline(a agentadapter.Adapter, sandbox string) string {
 // adapterSandboxNotes is the sandbox paragraph for a non-grok adapter: the
 // handoff and the worktrees are the only writable paths (the Claude settings
 // file's Edit rules, agy's workspace), shell commands are sandboxed, and
-// there is no ~/.grok.
-func adapterSandboxNotes(a agentadapter.Adapter, handoffAbs, defectsRoot string) []string {
+// there is no ~/.grok. readOnly and domains are the task's: on a worker the
+// job's report evidence is readable and the policy may allow a few hosts.
+func adapterSandboxNotes(a agentadapter.Adapter, handoffAbs, defectsRoot string, readOnly, domains []string) []string {
+	network := "- Shell network may be blocked: record a step that fails for it as BLOCKED, do not retry around it."
+	switch {
+	case a.Name() != agentadapter.Claude:
+	case len(domains) == 0:
+		network = "- Network: none. A step that needs it (a package install) will fail: record it as BLOCKED, do not retry around it."
+	default:
+		network = "- Network: only " + strings.Join(domains, ", ") + " is reachable. Use --ignore-scripts where the package manager allows it."
+	}
+	evidence := "- Historical fix evidence outside cwd may be unreadable; write new proof to handoff fix-evidence/."
+	if pathWithin(defectsRoot, readOnly) {
+		evidence = "- The report evidence paths in BRIEF.md are readable (read-only); write new proof to handoff fix-evidence/."
+	}
 	return []string{
 		SandboxHeadline(a, "strict"),
 		"- Write: cwd (" + handoffAbs + ") and the worktrees listed below, nothing else; other writes are refused.",
-		"- Shell commands run inside the sandbox; outbound network may be blocked. Temp dirs are not private: keep nothing secret there.",
-		"- Product code: edit only under the worktrees listed below.",
-		"- Historical fix evidence outside cwd may be unreadable; write new proof to handoff fix-evidence/.",
+		"- Shell commands run inside the sandbox. Temp dirs are not private: keep nothing secret there.",
+		network,
+		"- Product code: edit only under the worktrees listed below. git status, diff and log work; commits are refused.",
+		evidence,
 		"- Inventory updates under " + defectsRoot + " are blocked; write new proof to handoff fix-evidence/.",
 		"- A refused tool is reported back as a denial; do not try to work around it.",
 	}
+}
+
+// pathWithin reports whether p is one of dirs or inside one.
+func pathWithin(p string, dirs []string) bool {
+	if p == "" {
+		return false
+	}
+	p = filepath.Clean(p)
+	for _, d := range dirs {
+		d = filepath.Clean(d)
+		if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }

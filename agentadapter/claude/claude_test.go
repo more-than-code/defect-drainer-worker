@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -167,7 +168,10 @@ func TestImplementerArgvAndEnv(t *testing.T) {
 	}
 	want := []string{"-p", "do it", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
 		"--settings", "/data/agent-state/j1/claude-settings.json", "--setting-sources", "user", "--strict-mcp-config",
-		"--add-dir", "/data/wt/a", "--add-dir", "/data/wt/b", "--max-turns", "40", "--resume", "023759b8-8496-44f8-9ef8-e6fb4e1e08e4"}
+		"--add-dir", "/data/wt/a", "--add-dir", "/data/wt/b",
+		// F10: --allowedTools mirrors the settings file's allow list.
+		"--allowedTools", "Bash,Read(//data/batch-jobs/j1/**),Read(//data/wt/a/**),Read(//data/wt/b/**),Edit(//data/batch-jobs/j1/**),Edit(//data/wt/a/**),Edit(//data/wt/b/**)",
+		"--max-turns", "40", "--resume", "023759b8-8496-44f8-9ef8-e6fb4e1e08e4"}
 	if !slices.Equal(c.Args, want) {
 		t.Fatalf("argv = %q", c.Args)
 	}
@@ -387,5 +391,108 @@ func TestReviewerReadsJobNotesReadOnly(t *testing.T) {
 	tk.ReadOnly = []string{"relative/BRIEF.md"}
 	if _, err := Settings(tk); err == nil {
 		t.Fatal("a relative read-only path must be refused")
+	}
+}
+
+// RF-a item 2 (D2): on a worker, the job's clone .git sits under the denied
+// {state}/repos. It is re-allowed for reading only, the repos dir stays in
+// denyRead, and another clone is neither read-allowed nor re-allowed.
+func TestWorkerCloneGitReadOnly(t *testing.T) {
+	for _, role := range []aa.Role{aa.Implementer, aa.Reviewer} {
+		tk := task(role, aa.APIKey)
+		tk.DenyRead = []string{"/state/repos", "/state/jobs"}
+		tk.ReadOnly = []string{"/state/repos/aaa/.git", "/state/jobs/j1/evidence"}
+		body, err := Settings(tk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var s settings
+		if err := json.Unmarshal(body, &s); err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"Read(//state/repos/aaa/.git/**)", "Read(//state/jobs/j1/evidence/**)"} {
+			if !slices.Contains(s.Permissions.Allow, want) {
+				t.Errorf("%v: allow lacks %q", role, want)
+			}
+		}
+		if !slices.Contains(s.Sandbox.Filesystem.DenyRead, "//state/repos") || !slices.Contains(s.Sandbox.Filesystem.DenyRead, "//state/jobs") {
+			t.Errorf("%v: denyRead = %q", role, s.Sandbox.Filesystem.DenyRead)
+		}
+		for _, want := range []string{"//state/repos/aaa/.git", "//state/jobs/j1/evidence"} {
+			if !slices.Contains(s.Sandbox.Filesystem.AllowRead, want) {
+				t.Errorf("%v: allowRead lacks %q", role, want)
+			}
+		}
+		if strings.Contains(string(body), "Edit(//state") || strings.Contains(string(body), "/state/repos/bbb") {
+			t.Fatalf("%v: clone editable or another clone allowed: %s", role, body)
+		}
+	}
+}
+
+// RF-a item 4 (D3): the allowed hosts reach the implementer's sandbox only,
+// and a task without any writes exactly the file it wrote before.
+func TestAllowedDomains(t *testing.T) {
+	tk := task(aa.Implementer, aa.APIKey)
+	before, err := Settings(tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(before), sandboxNetworkKey) {
+		t.Fatalf("no domains, yet a network block: %s", before)
+	}
+	tk.AllowedDomains = []string{"registry.npmjs.org"}
+	body, err := Settings(tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Sandbox map[string]json.RawMessage `json:"sandbox"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	var net map[string][]string
+	if err := json.Unmarshal(m.Sandbox[sandboxNetworkKey], &net); err != nil || !slices.Equal(net[allowedDomainsKey], []string{"registry.npmjs.org"}) {
+		t.Fatalf("network = %s (%v)", m.Sandbox[sandboxNetworkKey], err)
+	}
+	// Everything else is unchanged.
+	var a, b settings
+	_ = json.Unmarshal(before, &a)
+	_ = json.Unmarshal(body, &b)
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("domains changed other settings:\n%s\n%s", before, body)
+	}
+	tk.Role = aa.Reviewer
+	if body, _ := Settings(tk); strings.Contains(string(body), sandboxNetworkKey) {
+		t.Fatalf("reviewer got network: %s", body)
+	}
+}
+
+// F10: --allowedTools is the settings allow list for both roles, and a
+// rule that a comma would split is refused.
+func TestAllowedToolsMirrorsSettings(t *testing.T) {
+	a := New(Config{Bin: "/usr/bin/claude"})
+	for _, role := range []aa.Role{aa.Implementer, aa.Reviewer} {
+		tk := task(role, aa.APIKey)
+		tk.ReadOnly = []string{"/state/repos/aaa/.git"}
+		c, err := a.Command(tk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.Index(c.Args, "--allowedTools")
+		if i < 0 || i+1 >= len(c.Args) {
+			t.Fatalf("%v: no --allowedTools: %q", role, c.Args)
+		}
+		body, _ := Settings(tk)
+		var s settings
+		_ = json.Unmarshal(body, &s)
+		if c.Args[i+1] != strings.Join(s.Permissions.Allow, ",") {
+			t.Fatalf("%v: --allowedTools %q, allow %q", role, c.Args[i+1], s.Permissions.Allow)
+		}
+	}
+	tk := task(aa.Implementer, aa.APIKey)
+	tk.Worktrees = []string{"/data/wt/a,b"}
+	if _, err := a.Command(tk); err == nil {
+		t.Fatal("a comma in a rule path must be refused")
 	}
 }
