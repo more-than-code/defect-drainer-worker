@@ -53,6 +53,10 @@ type Host struct {
 	// AllowedDomains are the hosts the implementer's sandbox may reach
 	// (empty: no network).
 	AllowedDomains []string
+	// DenyWrite are paths every agent of the job may not write (a worker's
+	// status.json, readiness dir and $HOME, spec §4.1.11). Local serve sets
+	// none.
+	DenyWrite []string
 }
 
 // AgentAdapter is the host's adapter.

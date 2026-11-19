@@ -3,7 +3,6 @@ package worker
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/config"
@@ -26,7 +25,7 @@ type Snapshot struct {
 	Busy      []string                    `json:"busyJobIds"`
 }
 
-func snapshotPath(p Paths) string { return filepath.Join(p.StateDir, "status.json") }
+func snapshotPath(p Paths) string { return p.StatusFile() }
 
 // writeSnapshot records the connection state and the latest readiness.
 func (w *Worker) writeSnapshot(connected bool) {

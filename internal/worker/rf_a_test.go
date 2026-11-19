@@ -312,3 +312,56 @@ func TestSessionEndReason(t *testing.T) {
 		}
 	}
 }
+
+// §4.1.11 (F11): a worker job may not write the worker's own files or
+// $HOME; the list comes from Paths. A $HOME that holds the state dir is
+// left out (it would cover the agent's own dirs).
+func TestJobDenyWrite(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	p := Paths{ConfigDir: "/etc/w", StateDir: "/state"}
+	got := (&hostAdapter{}).host(p, "bjob_1", "", nil, nil).DenyWrite
+	want := []string{p.StatusFile(), p.ReadinessDir(), home}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("deny-write %v, want %v", got, want)
+	}
+	if p.StatusFile() != "/state/status.json" || p.ReadinessDir() != "/state/readiness" {
+		t.Fatalf("paths %s %s", p.StatusFile(), p.ReadinessDir())
+	}
+	p.StateDir = filepath.Join(home, "state")
+	if got := jobDenyWrite(p); slices.Contains(got, home) {
+		t.Fatalf("$HOME holding the state dir was denied: %v", got)
+	}
+}
+
+// Guard for §4.1.11: after a real job, every entry directly in {state} is
+// either masked by DenyRead or listed in DenyWrite, so a new worker file
+// cannot slip through unnoticed.
+func TestStateEntriesMaskedOrDenied(t *testing.T) {
+	h := newHarness(t, harnessOpts{})
+	spec := fixSpec("bjob_rfa_state")
+	h.offerJob(spec, nil)
+	h.waitDone(spec.JobID, 60*time.Second)
+	eventually(t, 5*time.Second, "status.json", func() bool { _, err := os.Stat(h.paths.StatusFile()); return err == nil })
+	host := (&hostAdapter{}).host(h.paths, spec.JobID, "", nil, nil)
+	covered := append(host.DenyRead(), host.DenyWrite...)
+	ents, err := os.ReadDir(h.paths.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	// Not vacuous: the job and the worker wrote their usual entries.
+	for _, want := range []string{"status.json", "readiness", "jobs", "repos", "credential"} {
+		if !slices.Contains(names, want) {
+			t.Fatalf("{state} lacks %s after a job: %v", want, names)
+		}
+	}
+	for _, e := range ents {
+		if p := filepath.Join(h.paths.StateDir, e.Name()); !slices.Contains(covered, p) {
+			t.Errorf("{state}/%s is neither masked nor write-denied", e.Name())
+		}
+	}
+}

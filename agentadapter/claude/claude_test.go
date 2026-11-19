@@ -168,10 +168,7 @@ func TestImplementerArgvAndEnv(t *testing.T) {
 	}
 	want := []string{"-p", "do it", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
 		"--settings", "/data/agent-state/j1/claude-settings.json", "--setting-sources", "user", "--strict-mcp-config",
-		"--add-dir", "/data/wt/a", "--add-dir", "/data/wt/b",
-		// F10: --allowedTools mirrors the settings file's allow list.
-		"--allowedTools", "Bash,Read(//data/batch-jobs/j1/**),Read(//data/wt/a/**),Read(//data/wt/b/**),Edit(//data/batch-jobs/j1/**),Edit(//data/wt/a/**),Edit(//data/wt/b/**)",
-		"--max-turns", "40", "--resume", "023759b8-8496-44f8-9ef8-e6fb4e1e08e4"}
+		"--add-dir", "/data/wt/a", "--add-dir", "/data/wt/b", "--max-turns", "40", "--resume", "023759b8-8496-44f8-9ef8-e6fb4e1e08e4"}
 	if !slices.Equal(c.Args, want) {
 		t.Fatalf("argv = %q", c.Args)
 	}
@@ -185,7 +182,9 @@ func TestImplementerArgvAndEnv(t *testing.T) {
 		}
 	}
 	wantEnv := []string{"PATH=/bin", "ANTHROPIC_API_KEY=sk-test-key", "CLAUDE_CONFIG_DIR=/data/agent-state/j1/claude-config",
-		"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "CI=1", "SKILL_FORGE_AGENT_ROLE=worker"}
+		"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "CI=1", "SKILL_FORGE_AGENT_ROLE=worker",
+		// §4.1.11: tool caches under the cwd, off $HOME.
+		"npm_config_cache=/data/batch-jobs/j1/.cache/npm", "XDG_CACHE_HOME=/data/batch-jobs/j1/.cache"}
 	if !slices.Equal(c.Env, wantEnv) {
 		t.Fatalf("env = %q", c.Env)
 	}
@@ -468,31 +467,73 @@ func TestAllowedDomains(t *testing.T) {
 	}
 }
 
-// F10: --allowedTools is the settings allow list for both roles, and a
-// rule that a comma would split is refused.
-func TestAllowedToolsMirrorsSettings(t *testing.T) {
+// §4.1.11 (F11): DenyWrite reaches the sandbox for both roles; none writes
+// the same file as before; an entry over the agent's own or read-only
+// paths is refused.
+func TestDenyWrite(t *testing.T) {
+	for _, role := range []aa.Role{aa.Implementer, aa.Reviewer} {
+		tk := task(role, aa.APIKey)
+		before, err := Settings(tk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(before), "denyWrite") {
+			t.Fatalf("%v: no entries, yet denyWrite: %s", role, before)
+		}
+		tk.ReadOnly = []string{"/state/repos/aaa/.git"}
+		tk.DenyWrite = []string{"/state/status.json", "/state/readiness", "/home/w"}
+		body, err := Settings(tk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var s settings
+		if err := json.Unmarshal(body, &s); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(s.Sandbox.Filesystem.DenyWrite, []string{"//state/status.json", "//state/readiness", "//home/w"}) {
+			t.Fatalf("%v: denyWrite = %q", role, s.Sandbox.Filesystem.DenyWrite)
+		}
+		for _, bad := range []string{
+			"/data",                 // contains the handoff and the worktrees
+			"/data/batch-jobs/j1",   // the handoff itself
+			"/data/wt/a",            // a worktree
+			"/state/repos",          // contains a read-only path
+			"/state/repos/aaa/.git", // a read-only path
+			"relative/dir",          // not absolute
+		} {
+			tk.DenyWrite = []string{"/state/status.json", bad}
+			if _, err := Settings(tk); err == nil {
+				t.Errorf("%v: deny-write %q accepted", role, bad)
+			}
+		}
+		// A sibling of an own dir is fine.
+		tk.DenyWrite = []string{"/data/wt/ab", "/data/batch-jobs/j10"}
+		if _, err := Settings(tk); err != nil {
+			t.Errorf("%v: sibling refused: %v", role, err)
+		}
+	}
+}
+
+// §4.1.11: both roles get the caches under their own cwd, over inherited
+// values.
+func TestCacheEnvUnderCwd(t *testing.T) {
 	a := New(Config{Bin: "/usr/bin/claude"})
 	for _, role := range []aa.Role{aa.Implementer, aa.Reviewer} {
 		tk := task(role, aa.APIKey)
-		tk.ReadOnly = []string{"/state/repos/aaa/.git"}
+		tk.Handoff = "/data/batch-jobs/j1/review/spec"
+		tk.Env = append(tk.Env, "npm_config_cache=/home/w/.npm", "NPM_CONFIG_CACHE=/home/w/.npm", "XDG_CACHE_HOME=/home/w/.cache")
 		c, err := a.Command(tk)
 		if err != nil {
 			t.Fatal(err)
 		}
-		i := slices.Index(c.Args, "--allowedTools")
-		if i < 0 || i+1 >= len(c.Args) {
-			t.Fatalf("%v: no --allowedTools: %q", role, c.Args)
+		if got := aa.GetEnv(c.Env, "npm_config_cache"); got != "/data/batch-jobs/j1/review/spec/.cache/npm" {
+			t.Errorf("%v: npm_config_cache = %q", role, got)
 		}
-		body, _ := Settings(tk)
-		var s settings
-		_ = json.Unmarshal(body, &s)
-		if c.Args[i+1] != strings.Join(s.Permissions.Allow, ",") {
-			t.Fatalf("%v: --allowedTools %q, allow %q", role, c.Args[i+1], s.Permissions.Allow)
+		if got := aa.GetEnv(c.Env, "XDG_CACHE_HOME"); got != "/data/batch-jobs/j1/review/spec/.cache" {
+			t.Errorf("%v: XDG_CACHE_HOME = %q", role, got)
 		}
-	}
-	tk := task(aa.Implementer, aa.APIKey)
-	tk.Worktrees = []string{"/data/wt/a,b"}
-	if _, err := a.Command(tk); err == nil {
-		t.Fatal("a comma in a rule path must be refused")
+		if aa.GetEnv(c.Env, "NPM_CONFIG_CACHE") != "" || strings.Contains(strings.Join(c.Env, "\n"), "/home/w") {
+			t.Errorf("%v: an inherited cache survived: %q", role, c.Env)
+		}
 	}
 }

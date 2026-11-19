@@ -36,6 +36,12 @@ func (p Paths) Secrets() string       { return filepath.Join(p.ConfigDir, "secre
 func (p Paths) LegacyEnv() string     { return filepath.Join(p.ConfigDir, "env") }
 func (p Paths) LegacyEnvPrev() string { return filepath.Join(p.ConfigDir, "env.prev") }
 
+// StatusFile is {state}/status.json (dd-worker status); ReadinessDir is
+// {state}/readiness (the adapters' readiness checks). Both are the
+// worker's own files that an agent must not write (spec §4.1.11).
+func (p Paths) StatusFile() string   { return filepath.Join(p.StateDir, "status.json") }
+func (p Paths) ReadinessDir() string { return filepath.Join(p.StateDir, "readiness") }
+
 // ReposDir is {state}/repos; JobsDir is {state}/jobs (protocol v1 §8.2).
 func (p Paths) ReposDir() string    { return filepath.Join(p.StateDir, "repos") }
 func (p Paths) JobsDir() string     { return filepath.Join(p.StateDir, "jobs") }

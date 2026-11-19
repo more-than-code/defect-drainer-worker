@@ -359,6 +359,7 @@ func (r *run) start() (Outcome, error) {
 			// report evidence (spec §4.1 items 2 and 5).
 			ReadOnly:       r.host.ReadOnly,
 			AllowedDomains: r.host.AllowedDomains,
+			DenyWrite:      r.host.DenyWrite,
 
 			GrokBypassPermissions: s.Caps.GrokBypassPermissions,
 			GrokTools:             s.Caps.GrokTools,
@@ -849,6 +850,7 @@ func (r *run) reviewLens(fin loopFinish, rev *ReviewRun, lens, brief string, ids
 		StateDir:   r.host.StateDir(r.spec.JobID),
 		DenyRead:   r.host.DenyRead(),
 		ReadOnly:   append(ReviewReadOnly(fin.handoff), r.host.ReadOnly...),
+		DenyWrite:  r.host.DenyWrite,
 		Cwd:        dir,
 		Prompt:     reviewAgentPrompt,
 		MaxTurns:   maxTurns,

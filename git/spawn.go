@@ -319,6 +319,8 @@ type CodingAgentOpts struct {
 	// the hosts its sandbox may reach. Both go to the adapter's Task.
 	ReadOnly       []string
 	AllowedDomains []string
+	// DenyWrite goes to the adapter's Task (spec §4.1.11).
+	DenyWrite []string
 }
 
 // agentStream parses streaming-json (NDJSON) stdout **before** lineForwarder
@@ -786,6 +788,7 @@ func StartCodingAgent(handoffAbs, batchID, defectsRoot string, worktrees []Workt
 		task.DenyRead = opts.DenyRead
 		task.ReadOnly = opts.ReadOnly
 		task.AllowedDomains = opts.AllowedDomains
+		task.DenyWrite = opts.DenyWrite
 		for _, v := range opts.VerifyCommands {
 			task.AllowCommands = append(task.AllowCommands, v.Command)
 		}
@@ -936,6 +939,7 @@ type ReviewAgentOpts struct {
 	Credential agentadapter.Credential
 	StateDir   string
 	DenyRead   []string
+	DenyWrite  []string
 	// Register runs after Start and before Wait so the caller can publish the
 	// process. The returned func is the single Wait — pass spawnedProc.reap,
 	// because Cmd.Wait must not run twice. Nil uses Cmd.Wait.
@@ -994,6 +998,7 @@ func StartReviewAgent(opts ReviewAgentOpts) (ReviewResult, error) {
 		Credential: opts.Credential,
 		StateDir:   opts.StateDir,
 		DenyRead:   opts.DenyRead,
+		DenyWrite:  opts.DenyWrite,
 		Timeout:    opts.Wall,
 		Env:        childBaseEnv(adapter, opts.StripEnv),
 	}

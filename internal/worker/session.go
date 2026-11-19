@@ -89,6 +89,9 @@ func (e closeError) Error() string {
 func (w *Worker) Run(ctx context.Context) error {
 	backoff := conn.NewBackoff()
 	var replaced []time.Time
+	if home, ok := workerHome(); ok && homeHoldsState(home, w.opts.Paths) {
+		w.logf("$HOME %s holds the state dir: agents' writes to it are not denied", home)
+	}
 	go w.readinessLoop(ctx)
 	for {
 		err := w.session(ctx, &backoff)

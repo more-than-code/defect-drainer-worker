@@ -93,6 +93,16 @@ worker declines every job. `sudo sh install.sh status` shows how it reads it.
   jobs you'd let see each other's work.
 - **Report evidence:** the agent and the reviewers can read this job's
   report screenshots, and no other job's.
+- **Writes:** the agent writes its job's handoff and worktrees. It cannot
+  write the worker's own files (`/var/lib/dd-worker/status.json` and
+  `readiness/`) or the worker user's home. Directories it cannot read
+  (other jobs, the clones, the credential, `~/.claude`) appear empty to it,
+  and anything it writes there is thrown away with the sandbox; it never
+  reaches the disk. One gap is accepted: the agent can create a *new* file
+  directly in `/var/lib/dd-worker`. The worker never reads files there it
+  doesn't know, and nothing runs from there.
+- **Tool caches:** npm and other XDG caches go to `.cache/` in the job's
+  handoff, not the home directory, and are removed with the job.
 - **Network** (Claude only; other adapters ignore it): none by default. `agent_allowed_domains` lists the exact
   hosts the agent's sandboxed shell may reach, for example
   `["registry.npmjs.org"]` for npm installs. Lowercase hostnames only: no
@@ -105,6 +115,11 @@ worker declines every job. `sudo sh install.sh status` shows how it reads it.
   never raise it. With no cap from the server, the host's value is used, or $5.
 - **Verify:** with `allow_verify_commands = false`, a job's verify commands
   are skipped, the job log says so, and no defect resolves from that job.
+
+Every agent run logs `Permission mode forced to default —
+CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set …` on stderr. That is expected: the
+worker sets the scrub on purpose so the agent's shell can't print the API key,
+and the allow and deny rules in the job's settings file apply either way.
 
 The loop also stops when the agent writes a `BLOCKED: <reason>` line in its
 `NOTES.md` (`blocked`), or when two iterations in a row change nothing

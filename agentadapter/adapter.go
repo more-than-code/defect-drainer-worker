@@ -105,6 +105,10 @@ type Task struct {
 	// AllowCommands are binaries the agent's shell may run, for CLIs that
 	// allow-list commands (agy). git is always added.
 	AllowCommands []string
+	// DenyWrite are absolute paths the agent's sandboxed shell may read
+	// but not write (a worker's own state files and $HOME). None may be or
+	// contain the handoff, a worktree or a ReadOnly path. Both roles.
+	DenyWrite []string
 	// AllowedDomains are the exact hosts the agent's sandboxed shell may
 	// reach (the worker's agent_allowed_domains). Empty: no network.
 	// Implementer only; adapters without a network rule ignore it.

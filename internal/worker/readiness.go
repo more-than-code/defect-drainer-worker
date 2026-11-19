@@ -110,7 +110,38 @@ func (h *hostAdapter) host(p Paths, jobID, model string, wts []git.WorktreeBindi
 		DefectsRoot:    p.Evidence(jobID),
 		ReadOnly:       jobReadOnly(p, jobID, wts),
 		AllowedDomains: domains,
+		DenyWrite:      jobDenyWrite(p),
 	}
+}
+
+// jobDenyWrite is what no agent of a worker job may write (spec §4.1.11):
+// every entry directly in {state} that DenyRead does not already mask
+// (masked dirs are empty private views, so writes there never reach disk),
+// and the worker's $HOME. $HOME is left out when it is not absolute or
+// contains the state dir, where a deny would cover the agent's own dirs
+// and Claude's settings would refuse it (homeHoldsState; the worker logs
+// it once at start). The residual: a new file directly in {state}.
+func jobDenyWrite(p Paths) []string {
+	out := []string{p.StatusFile(), p.ReadinessDir()}
+	if home, ok := workerHome(); ok && !homeHoldsState(home, p) {
+		out = append(out, home)
+	}
+	return out
+}
+
+// workerHome is the worker's $HOME when it is absolute.
+func workerHome() (string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil || !filepath.IsAbs(home) {
+		return "", false
+	}
+	return filepath.Clean(home), true
+}
+
+// homeHoldsState reports whether home is the state dir or an ancestor of it.
+func homeHoldsState(home string, p Paths) bool {
+	st := filepath.Clean(p.StateDir)
+	return st == home || strings.HasPrefix(st, home+string(filepath.Separator))
 }
 
 // jobReadOnly is what every agent of a job may read but not edit (spec
@@ -179,7 +210,7 @@ func (h *hostAdapter) check(ctx context.Context, p Paths, strip []string) worker
 		st.Reason = workerproto.ReasonSignedOut
 		return st
 	}
-	dir := filepath.Join(p.StateDir, "readiness", h.name)
+	dir := filepath.Join(p.ReadinessDir(), h.name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		st.Reason = workerproto.ReasonMissing
 		return st

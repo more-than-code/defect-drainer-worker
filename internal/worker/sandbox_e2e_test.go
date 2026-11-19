@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -35,6 +36,12 @@ func TestSandboxLayoutBwrap(t *testing.T) {
 		t.Fatal("bwrap not installed")
 	}
 	tmp := t.TempDir()
+	// The worker's $HOME, outside {state} as in the packaged layout, with a
+	// file to protect and a denyRead-masked dir.
+	home := filepath.Join(tmp, "home")
+	t.Setenv("HOME", home)
+	writeFile(t, filepath.Join(home, "keep.txt"), "home-bytes", 0o600)
+	writeFile(t, filepath.Join(home, ".claude", "settings.json"), "{}", 0o600)
 	p := Paths{ConfigDir: filepath.Join(tmp, "etc"), StateDir: filepath.Join(tmp, "state")}
 	run := func(dir string, args ...string) string {
 		t.Helper()
@@ -73,20 +80,35 @@ func TestSandboxLayoutBwrap(t *testing.T) {
 	writeFile(t, theirs, "png-theirs", 0o600)
 	cred := p.Env()
 	writeFile(t, cred, "DD_WORKER_CREDENTIAL=secret\n", 0o600)
+	// The worker's own files at the state root (F11).
+	status, ready := p.StatusFile(), filepath.Join(p.ReadinessDir(), "claude", "check.json")
+	writeFile(t, status, "status-bytes", 0o600)
+	writeFile(t, ready, "ready-bytes", 0o600)
+	protected := map[string]string{status: "status-bytes", ready: "ready-bytes", filepath.Join(home, "keep.txt"): "home-bytes"}
 
 	wts := []git.WorktreeBinding{{Repo: "app", RepoURL: canonA, PrimaryAbs: cloneA, WorktreeAbs: wt, Branch: "dd/bjob_sbx1/app"}}
 	host := (&hostAdapter{}).host(p, "bjob_sbx1", "", wts, nil)
-	implementer := aa.Task{Role: aa.Implementer, Handoff: handoff, Worktrees: []string{wt}, ReadOnly: host.ReadOnly, DenyRead: host.DenyRead()}
+	if !slices.Contains(host.DenyWrite, home) || !slices.Contains(host.DenyWrite, status) {
+		t.Fatalf("worker deny-write %v", host.DenyWrite)
+	}
+	implementer := aa.Task{Role: aa.Implementer, Handoff: handoff, Worktrees: []string{wt}, ReadOnly: host.ReadOnly, DenyRead: host.DenyRead(), DenyWrite: host.DenyWrite}
 	lens := filepath.Join(handoff, "review", "spec")
 	_ = os.MkdirAll(lens, 0o755)
 	reviewer := aa.Task{Role: aa.Reviewer, Handoff: lens, Worktrees: []string{wt},
-		ReadOnly: append(dexec.ReviewReadOnly(handoff), host.ReadOnly...), DenyRead: host.DenyRead()}
+		ReadOnly: append(dexec.ReviewReadOnly(handoff), host.ReadOnly...), DenyRead: host.DenyRead(), DenyWrite: host.DenyWrite}
 
 	// Negative control: the same job under the rc1 rules (no ReadOnly) must
 	// reproduce F2 and F4, or the checks below prove nothing.
 	oldHost := host
 	oldHost.ReadOnly = nil
 	before := aa.Task{Role: aa.Implementer, Handoff: handoff, Worktrees: []string{wt}, DenyRead: oldHost.DenyRead()}
+	// And under b86213b's rules (no DenyWrite) the worker's own files are
+	// writable: F11. Opened for append only, so no bytes change.
+	noDenyWrite := implementer
+	noDenyWrite.DenyWrite = nil
+	masked := filepath.Join(p.JobsDir(), "sibling-probe")
+	maskedHome := filepath.Join(home, ".claude", "probe")
+	residual := filepath.Join(p.StateDir, "new-root-file")
 
 	type check struct {
 		what string
@@ -102,6 +124,10 @@ func TestSandboxLayoutBwrap(t *testing.T) {
 			{"rc1 rules: git status fails (F2)", "git -C " + wt + " status --porcelain", false},
 			{"rc1 rules: report evidence unreadable (F4)", "cat " + mine, false},
 		}},
+		{noDenyWrite, []check{
+			{"b86213b rules: status.json writable (F11)", "( : >> " + status + " )", true},
+			{"b86213b rules: $HOME writable (F11)", "( : >> " + home + "/keep.txt )", true},
+		}},
 		{implementer, []check{
 			{"git status in the worktree", gitc + "-C " + wt + " status --porcelain", true},
 			{"edit in the worktree", "echo two > " + wt + "/a.txt", true},
@@ -113,6 +139,20 @@ func TestSandboxLayoutBwrap(t *testing.T) {
 			{"read another job's evidence", "cat " + theirs, false},
 			{"read the worker credential", "cat " + cred, false},
 			{"write the evidence", "echo x > " + mine, false},
+			// §4.1.11 / criterion 2 (amended): the worker's own files and
+			// $HOME are read-only; their bytes are checked after the run.
+			{"write status.json", "echo x > " + status, false},
+			{"write into readiness/", "echo x > " + ready, false},
+			{"new file in readiness/", "echo x > " + p.ReadinessDir() + "/planted", false},
+			{"write $HOME", "echo x > " + home + "/keep.txt", false},
+			{"new file in $HOME", "echo x > " + home + "/planted", false},
+			{"npm-style cache in the handoff", "mkdir -p " + handoff + "/.cache/npm && echo x > " + handoff + "/.cache/npm/c", true},
+			// Masked dirs are private empty views: the write works inside and
+			// never reaches the disk (checked below).
+			{"write into a masked dir ({state}/jobs)", "echo x > " + masked, true},
+			{"write into a masked dir ($HOME/.claude)", "echo x > " + maskedHome, true},
+			// The accepted residual: a new file directly in {state}.
+			{"new file directly in {state} (residual)", "echo x > " + residual, true},
 		}},
 		{reviewer, []check{
 			{"reviewer git diff <base>", gitc + "-C " + wt + " diff " + base + " >/dev/null", true},
@@ -120,6 +160,8 @@ func TestSandboxLayoutBwrap(t *testing.T) {
 			{"reviewer reads this job's evidence", "cat " + mine, true},
 			{"reviewer writes the worktree", "echo x > " + wt + "/b.txt", false},
 			{"reviewer reads another clone", "cat " + cloneB + "/.git/HEAD", false},
+			{"reviewer writes status.json", "echo x > " + status, false},
+			{"reviewer writes $HOME", "echo x > " + home + "/keep.txt", false},
 		}},
 	} {
 		body, err := claude.Settings(c.task)
@@ -140,13 +182,29 @@ func TestSandboxLayoutBwrap(t *testing.T) {
 			}
 		}
 	}
+	for f, want := range protected {
+		if b, err := os.ReadFile(f); err != nil || string(b) != want {
+			t.Errorf("%s changed: %q %v", f, b, err)
+		}
+	}
+	for _, f := range []string{masked, maskedHome, filepath.Join(p.ReadinessDir(), "planted"), filepath.Join(home, "planted")} {
+		if _, err := os.Lstat(f); err == nil {
+			t.Errorf("%s reached the real disk", f)
+		}
+	}
+	if _, err := os.Lstat(residual); err != nil {
+		t.Errorf("the residual changed (a new {state} file is now refused?): update the docs: %v", err)
+	}
 }
 
-// bwrapArgs applies a Claude settings file's filesystem rules: the host
-// read-only (the test tree lives under /tmp, so no tmpfs there: only the
-// rules may hide it), every existing denyRead path hidden (an empty tmpfs, or
-// /dev/null over a file), every allowRead path bound back read-only on top,
-// and every Edit allow bound writable last.
+// bwrapArgs applies a Claude settings file's filesystem rules the way probe
+// V3 observed them: the host writable (the worker user can write its own
+// state, F11), every existing denyWrite path read-only, every existing
+// denyRead path hidden (an empty private tmpfs, or /dev/null over a file;
+// mounted after denyWrite so a masked dir inside $HOME stays a throwaway
+// view), every allowRead path bound back read-only on top, and every Edit
+// allow bound writable last. No tmpfs over /tmp: the test tree lives there,
+// so only the rules may hide it.
 func bwrapArgs(t *testing.T, body []byte) []string {
 	t.Helper()
 	var s struct {
@@ -157,6 +215,7 @@ func bwrapArgs(t *testing.T, body []byte) []string {
 			Filesystem struct {
 				DenyRead  []string `json:"denyRead"`
 				AllowRead []string `json:"allowRead"`
+				DenyWrite []string `json:"denyWrite"`
 			} `json:"filesystem"`
 		} `json:"sandbox"`
 	}
@@ -164,7 +223,12 @@ func bwrapArgs(t *testing.T, body []byte) []string {
 		t.Fatal(err)
 	}
 	path := func(rule string) string { return strings.TrimPrefix(rule, "/") }
-	args := []string{"--die-with-parent", "--unshare-net", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"}
+	args := []string{"--die-with-parent", "--unshare-net", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc"}
+	for _, d := range s.Sandbox.Filesystem.DenyWrite {
+		if _, err := os.Stat(path(d)); err == nil {
+			args = append(args, "--ro-bind", path(d), path(d))
+		}
+	}
 	for _, d := range s.Sandbox.Filesystem.DenyRead {
 		fi, err := os.Stat(path(d))
 		switch {
