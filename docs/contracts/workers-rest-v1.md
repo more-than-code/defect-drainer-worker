@@ -121,3 +121,56 @@ GitHubStatus = {
   - 502 `github_unavailable`.
 - **Errors** on the org routes: 403 `forbidden` for a member writing; 404 `github_not_installed` for check or disconnect with no installation; 409 `github_app_not_configured`; 502 `github_unavailable`.
 - **Branch listing** (`POST /api/git/branches`) in `AUTH=oidc` uses the App for `https://github.com/<owner>/<repo>`, default branch first: 400 `repo_not_installed` when none of the caller's orgs' active installations reaches it, 400 `repo_not_github` for other URLs, 400 `github_app_not_configured` without an App, 502 `github_unavailable`. `AUTH=none` still runs git.
+
+## 7. Worker browser (worker 0.2.0-rc3, additive)
+
+After-fix screenshots on workers (worker-protocol-v1 §15). The server never asks a worker for more than its policy allows: the worker applies its own `policy.toml` to every field below.
+
+### 7.1 App fields (GET/POST/PATCH /api/apps, /api/apps/{id})
+
+Four new fields. GET always returns them, with defaults for an app that never set them.
+
+| Field | Type | Default | Rule (400 code) |
+|---|---|---|---|
+| `worker_screenshots` | bool | `false` | Must be a JSON bool (`invalid_worker_screenshots`). On needs both `preview_cmd` and `preview_url` non-empty (`preview_required`), checked on the resulting row, so clearing a preview field while on is refused too. |
+| `preview_cmd` | string | `""` | Must be a string. Trimmed; at most 500 bytes; no control characters (newline, CR, NUL, tab…) (`invalid_preview_cmd`). |
+| `preview_url` | string | `""` | Must be a string. Trimmed; `""` or a base URL: `http` only, host exactly `127.0.0.1` or `localhost`, a port 1–65535 written canonically, path empty or `/`, no user info, query or fragment, at most 200 bytes (`invalid_preview_url`). No `[::1]`: the server stays stricter than the worker. |
+| `agent_hosts` | string[] | `[]` | Must be an array of strings, or `null` (= `[]`) (`invalid_agent_hosts`). Each entry trimmed and lowercased; empties and duplicates dropped; then at most 16 hostnames of two or more labels, each `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`, at most 253 characters, last label not all digits (no wildcard, IP or port) (`invalid_agent_hosts`). Empty means each worker's own `agent_allowed_domains`. |
+
+A refused PATCH changes nothing. PATCH stays admin/owner; POST as today.
+
+### 7.2 Jobs
+
+- **Job JSON:**
+  - `without_screenshots` (bool, persisted, omitted when false);
+  - `needs_browser` (bool, computed on reads, omitted when false): true on a queued remote job only while just a browser-ready worker may take it.
+- **Scheduling:**
+  - A job needs a browser when all of these hold:
+    - its app has `worker_screenshots` on;
+    - the app's coding agent `adapter` is `"claude"` (once the job ran: the adapter that started it). `""` (Any ready) and any other adapter do **not** count, and such a job runs code-only, logging `screenshots need the claude agent: this job runs code-only, with no after-fix screenshots` once;
+    - it isn't `without_screenshots`;
+    - it isn't a test run.
+  - Such a job is offered only to a worker with capability `browser.v1`, a policy `browser` that isn't empty, and a ready `browser` tool.
+  - Per-worker `queued_detail` reasons, checked in this order after the adapter rule:
+    1. `update dd-worker (no browser.v1)`
+    2. `no browser (policy)`
+    3. `browser not ready` or `browser not ready: <tool reason>` (`missing` when the tool is absent)
+- **Spec (`JobSpec.App`):**
+  - `browser` is true exactly when the job needs a browser;
+  - `previewCmd`/`previewUrl` are sent only with `browser`;
+  - `agentHosts` is sent whenever the app lists hosts.
+
+### 7.3 Run without screenshots
+
+`POST /api/batch-jobs/{id}/run-without-screenshots`
+
+- **Access:** members (session), console host only.
+- **Request:** body ignored (send `{}`).
+- **Success:** **200** `{"job": <job>}`. The job stays `queued` with `without_screenshots: true`, its queued reason and detail are cleared, a log line is added, and scheduling runs again. It then runs code-only on any worker.
+- **409** `{"error":"not_waiting_for_browser"}` unless the job is queued, remote, `queued_reason: "no_worker"` and needs a browser.
+- **404** for an unknown or foreign job; **400** `invalid id`.
+- **Audit:** `batch_job.run_without_screenshots` for the success (`ok`) and for 409 refusals (`denied:not_waiting_for_browser`).
+
+### 7.4 Workers (`GET /api/orgs/{org}/workers`)
+
+`policy` gains `allowed_domains` (string[]), `max_cost_usd` (int, 0 = unset), `browser` (string, the `agent_browser` path, `""` = off) and `masked_sockets` (string[]). These are `[]`/`0`/`""` from a worker before 0.2.0-rc3. `tools[]` may now include `browser`.

@@ -263,6 +263,27 @@ Do not stop early. Required artifacts (exact; Defect Drainer matches these, not 
 Leave your changes uncommitted; Defect Drainer commits them when the operator ships.
 Do not invent other marker spellings. Do not delegate onward.`
 
+// ContinuePromptBrowser is ContinuePrompt for a worker browser job
+// (worker-browser B6): screenshots come from dd-shot, and NO-SCREENSHOT is
+// for a dd-shot failure or an app without a preview only.
+const ContinuePromptBrowser = `Continue executing BRIEF.md and PROCESS.md. Resume where you left off.
+Do not stop early. Required artifacts (exact; Defect Drainer matches these, not prose):
+- NOTES.md
+- for each defect you claim fixed: fix-notes/<DEF-id>.md AND
+  fix-evidence/<DEF-id>/fix-01.png
+- take after-fix screenshots with: sh dd-shot <DEF-id> <path> [<path>...]
+  (from cwd, in ONE Bash call; it serves the app and stops it again)
+- to decline a defect, a full line in NOTES.md: UNFIXED: <DEF-id>
+- only if dd-shot failed, or BRIEF.md says the app has no preview, a full line:
+  NO-SCREENSHOT: <DEF-id>
+  with the DD-SHOT FAIL line dd-shot printed quoted under it
+  (that stops the loop only; harvest will not resolve without a new image)
+- if something outside your control blocks the work, a full line:
+  BLOCKED: <reason>
+  (that stops the loop; delete the line once the blocker is gone)
+Leave your changes uncommitted; Defect Drainer commits them when the operator ships.
+Do not invent other marker spellings. Do not delegate onward.`
+
 // CodingAgentOpts is extra spawn wiring (toolchain PATH, job-scoped sandbox
 // profile, prompt notes). Nil is a no-op.
 type CodingAgentOpts struct {
@@ -321,6 +342,12 @@ type CodingAgentOpts struct {
 	AllowedDomains []string
 	// DenyWrite goes to the adapter's Task (spec §4.1.11).
 	DenyWrite []string
+	// Browser is a worker browser job (worker-browser B1–B6): the adapter's
+	// Task gets UnixSockets, the prompt names dd-shot, and the continue
+	// prompt is ContinuePromptBrowser. The caller has added the host's
+	// masked sockets to DenyRead. NoPreview says the app has no preview.
+	Browser   bool
+	NoPreview bool
 }
 
 // agentStream parses streaming-json (NDJSON) stdout **before** lineForwarder
@@ -611,6 +638,10 @@ func buildBatchFixCLIPrompt(handoffAbs, batchID, defectsRoot, sandbox string, wo
 		"",
 	}
 	parts = append(parts, sandboxNotes...)
+	if opts != nil && opts.Browser {
+		parts = append(parts, "")
+		parts = append(parts, browserPromptNotes(opts.NoPreview)...)
+	}
 	if opts != nil && len(opts.ToolchainNotes) > 0 {
 		parts = append(parts, "")
 		parts = append(parts, opts.ToolchainNotes...)
@@ -770,6 +801,9 @@ func StartCodingAgent(handoffAbs, batchID, defectsRoot string, worktrees []Workt
 	// between iterations.
 	task.Prompt = prompt
 	cont := ContinuePrompt
+	if opts != nil && opts.Browser {
+		cont = ContinuePromptBrowser
+	}
 	if opts != nil && opts.ContinuePrompt != "" {
 		cont = opts.ContinuePrompt
 	}
@@ -789,6 +823,7 @@ func StartCodingAgent(handoffAbs, batchID, defectsRoot string, worktrees []Workt
 		task.ReadOnly = opts.ReadOnly
 		task.AllowedDomains = opts.AllowedDomains
 		task.DenyWrite = opts.DenyWrite
+		task.UnixSockets = opts.Browser
 		for _, v := range opts.VerifyCommands {
 			task.AllowCommands = append(task.AllowCommands, v.Command)
 		}
@@ -819,6 +854,9 @@ func StartCodingAgent(handoffAbs, batchID, defectsRoot string, worktrees []Workt
 		return nil, nil, err
 	}
 	cmd := exec.Command(spec.Bin, spec.Args...)
+	// stdin is /dev/null (os/exec's nil): a CLI that reads a piped stdin,
+	// as claude -p does, sees EOF at once instead of waiting for data.
+	cmd.Stdin = nil
 	cmd.Dir = spec.Dir
 	// Own process group so descendants die with the iteration. A background
 	// sleep or a swap loop otherwise outlives the exit and can still race
@@ -1010,6 +1048,9 @@ func StartReviewAgent(opts ReviewAgentOpts) (ReviewResult, error) {
 		return ReviewResult{}, err
 	}
 	cmd := exec.Command(spec.Bin, spec.Args...)
+	// stdin is /dev/null (os/exec's nil): a CLI that reads a piped stdin,
+	// as claude -p does, sees EOF at once instead of waiting for data.
+	cmd.Stdin = nil
 	cmd.Dir = spec.Dir
 	// Own process group so a wall or Stop kill reaches git/shell grandchildren.
 	// The implementer spawn does not do this.

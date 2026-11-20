@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -29,6 +30,8 @@ const (
 	// max_cost_usd, the same ceiling the server puts on its own cap.
 	MaxAllowedDomains = 16
 	MaxMaxCostUSD     = 100
+	// MaxDenySockets bounds agent_deny_sockets.
+	MaxDenySockets = 32
 	// DefaultAgentMaxCostUSD is the per-job cost cap when neither the server
 	// nor this policy sets one (spec D5).
 	DefaultAgentMaxCostUSD = 5
@@ -50,6 +53,8 @@ var policySchema = policy.Schema{
 	"allow_ship":            policy.Bool,
 	"agent_allowed_domains": policy.Strings,
 	"max_cost_usd":          policy.Int,
+	"agent_browser":         policy.String,
+	"agent_deny_sockets":    policy.Strings,
 }
 
 // Policy is /etc/dd-worker/policy.toml as the worker enforces it. When
@@ -74,6 +79,12 @@ type Policy struct {
 	// (0: unset). Whole dollars: the policy file has no decimals.
 	AllowedDomains []string
 	MaxCostUSD     int
+	// AgentBrowser is the host's headless browser ("": no browser jobs).
+	// Setting it also gives a browser job's sandbox unix sockets, with every
+	// host socket the worker could reach masked (B1, B2). DenySockets are
+	// extra paths that sandbox hides.
+	AgentBrowser string
+	DenySockets  []string
 
 	repoPatterns []repoURL
 }
@@ -109,6 +120,8 @@ func LoadPolicy(path string, skipOwner bool, uid func(os.FileInfo) (uint32, bool
 	p.AllowVerifyCommands = v["allow_verify_commands"].Bool
 	p.AllowShip = v["allow_ship"].Bool
 	p.AllowedDomains = v["agent_allowed_domains"].Strings
+	p.AgentBrowser = v["agent_browser"].String
+	p.DenySockets = v["agent_deny_sockets"].Strings
 	if c, ok := v["max_cost_usd"]; ok {
 		if c.Int < 1 { // 0 would read as unset
 			p.Reason = "bad_max_cost_usd"
@@ -119,6 +132,14 @@ func LoadPolicy(path string, skipOwner bool, uid func(os.FileInfo) (uint32, bool
 	if reason := p.check(); reason != "" {
 		p.Reason = reason
 		return p
+	}
+	// A browser that exists must be root's alone (B1). One that is missing
+	// leaves the policy valid; readiness reports it missing.
+	if p.AgentBrowser != "" && !skipOwner {
+		if r := browserFileReason(p.AgentBrowser, uid); r != "" && r != workerproto.ReasonMissing {
+			p.Reason = "bad_agent_browser"
+			return p
+		}
 	}
 	p.Valid = true
 	return p
@@ -169,6 +190,12 @@ func (p *Policy) check() string {
 	if p.MaxCostUSD < 0 || p.MaxCostUSD > MaxMaxCostUSD {
 		return "bad_max_cost_usd"
 	}
+	if p.AgentBrowser != "" && !cleanAbs(p.AgentBrowser) {
+		return "bad_agent_browser"
+	}
+	if !validDenySockets(p.DenySockets) {
+		return "bad_agent_deny_sockets"
+	}
 	p.repoPatterns = nil
 	for _, r := range p.Repos {
 		u, err := canonicalRepo(r, true)
@@ -213,6 +240,27 @@ func validDomains(ds []string) bool {
 	return true
 }
 
+// cleanAbs reports whether p is an absolute, clean path other than "/".
+func cleanAbs(p string) bool {
+	return filepath.IsAbs(p) && filepath.Clean(p) == p && p != "/" && !strings.ContainsAny(p, "\x00\n\r")
+}
+
+// validDenySockets checks agent_deny_sockets: at most MaxDenySockets
+// absolute, clean paths, none "/", no duplicates.
+func validDenySockets(ps []string) bool {
+	if len(ps) > MaxDenySockets {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, p := range ps {
+		if !cleanAbs(p) || seen[p] {
+			return false
+		}
+		seen[p] = true
+	}
+	return true
+}
+
 func known(a string) bool {
 	for _, k := range KnownAdapters {
 		if a == k {
@@ -222,17 +270,21 @@ func known(a string) bool {
 	return false
 }
 
-// Wire is the policy as hello and status report it (§4.1).
+// Wire is the policy as hello and status report it (§4.1). masked_sockets
+// is empty here; the worker adds its last scan (Worker.wirePolicy).
 func (p Policy) Wire() workerproto.Policy {
 	w := workerproto.Policy{
 		Valid: p.Valid, Enabled: p.Valid && p.Enabled,
 		Orgs: nonNil(p.Orgs), Adapters: nonNil(p.Adapters), Repos: nonNil(p.Repos),
 		MinSandbox: p.MinSandbox, MaxTurns: p.MaxTurns, MaxWallSec: p.MaxWallSec,
 		AllowVerifyCommands: p.AllowVerifyCommands, AllowShip: p.AllowShip,
+		AllowedDomains: nonNil(p.AllowedDomains), MaxCostUSD: p.MaxCostUSD,
+		Browser: p.AgentBrowser, MaskedSockets: []string{},
 	}
 	if !p.Valid {
 		w.Orgs, w.Adapters, w.Repos = []string{}, []string{}, []string{}
 		w.AllowVerifyCommands, w.AllowShip = false, false
+		w.AllowedDomains, w.MaxCostUSD, w.Browser, w.MaskedSockets = []string{}, 0, "", []string{}
 	}
 	return w
 }

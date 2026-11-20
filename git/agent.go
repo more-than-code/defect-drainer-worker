@@ -127,3 +127,24 @@ func pathWithin(p string, dirs []string) bool {
 	}
 	return false
 }
+
+// browserPromptNotes is the prompt's screenshot paragraph for a worker
+// browser job (worker-browser B3, B6).
+func browserPromptNotes(noPreview bool) []string {
+	if noPreview {
+		return []string{
+			"SCREENSHOTS: this host has a headless browser, but the app has no preview command,",
+			"so dd-shot cannot serve it. Put NO-SCREENSHOT: <DEF-id> in NOTES.md and say why.",
+		}
+	}
+	return []string{
+		"SCREENSHOTS (this host has a headless browser):",
+		"- Take each after-fix screenshot with: sh dd-shot <DEF-id> <path> [<path>...]",
+		"  from cwd, in ONE Bash call. It starts the app's preview, waits for it, writes",
+		"  fix-evidence/<DEF-id>/fix-NN.png and stops the preview. BRIEF.md has the details.",
+		"- A server you start in one Bash call does not survive into the next; do not start",
+		"  the preview yourself to screenshot it later.",
+		"- NO-SCREENSHOT: <DEF-id> counts only with the DD-SHOT FAIL line dd-shot printed",
+		"  quoted under it in NOTES.md.",
+	}
+}

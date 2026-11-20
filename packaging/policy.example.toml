@@ -42,3 +42,16 @@ allow_ship = true
 # 1 to 100). Unset uses the server's cap, or $5 when the server sends none.
 # Versions before 0.2.0-rc2 refuse this key: remove it before a rollback.
 # max_cost_usd = 5
+
+# Headless browser for after-fix screenshots: an absolute path to a root-owned
+# executable that only root can write. Unset or empty means no browser jobs.
+# Setting it also lets a browser job's sandbox use unix sockets; the worker
+# hides every host socket it could reach (see host-setup, After-fix
+# screenshots). Upgrade the control plane first.
+# Versions before 0.2.0-rc3 refuse this key: remove it before a rollback.
+# agent_browser = "/usr/bin/chromium"
+
+# More paths to hide from a browser job's sandbox, beyond the sockets the
+# worker finds (absolute paths, at most 32).
+# Versions before 0.2.0-rc3 refuse this key: remove it before a rollback.
+# agent_deny_sockets = ["/run/example"]

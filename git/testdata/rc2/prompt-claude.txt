@@ -1,0 +1,56 @@
+Batch defect fix session for BATCH-1.
+Handoff directory (cwd): /srv/dd/jobs/j1/handoff
+Inventory root: /srv/dd/jobs/j1/evidence
+
+SANDBOX: the claude CLI's own sandbox, strict (Defect Drainer runs claude strict only).
+- Write: cwd (/srv/dd/jobs/j1/handoff) and the worktrees listed below, nothing else; other writes are refused.
+- Shell commands run inside the sandbox. Temp dirs are not private: keep nothing secret there.
+- Network: only registry.npmjs.org is reachable. Use --ignore-scripts where the package manager allows it.
+- Product code: edit only under the worktrees listed below. git status, diff and log work; commits are refused.
+- The report evidence paths in BRIEF.md are readable (read-only); write new proof to handoff fix-evidence/.
+- Inventory updates under /srv/dd/jobs/j1/evidence are blocked; write new proof to handoff fix-evidence/.
+- A refused tool is reported back as a denial; do not try to work around it.
+
+WORKTREE ENFORCEMENT (mandatory):
+- web: EDIT ONLY /srv/dd/jobs/j1/handoff/worktrees/web (branch dd/BATCH-1); NEVER /srv/dd/repos/web
+- Product edits outside listed worktree paths are forbidden.
+- Do not checkout branches on primary trees. Do not run git commands in primaryAbs.
+- READ each worktree's own contract file (AGENTS.md / CLAUDE.md — BRIEF.md lists
+  the exact paths) BEFORE editing it. They define that repo's mandatory gates,
+  skills and conventions; where stricter than this brief, they win. Follow its
+  house style — do not reformat code the fix does not need to touch.
+
+ROLE (SKILL_FORGE_AGENT_ROLE=worker is set on this process):
+- You are the worker for this job, not an orchestrator. Do not delegate onward.
+- Read, in this order, BEFORE the first product edit: BRIEF.md, PROCESS.md,
+  SKILLS.md, then each contract file SKILLS.md lists for the worktree you touch.
+- SKILLS.md carries absolute paths because cwd is the handoff, not a product repo;
+  directory-based skill discovery will not find them. If SKILLS.md lists none for a
+  worktree, use security-baseline, coding-discipline, code-quality and testing-strategy.
+- Classify each defect's blast radius (Tier 1/2/3) in NOTES.md, then proceed:
+  the operator starting this batch IS the approval. Do not wait to be approved.
+- Run the verification commands yourself inside the worktree. DD re-runs them after
+  you exit; a result you claim but did not observe is a defect in your notes, not a pass.
+- Leave your changes uncommitted in the worktree branch already checked out; Defect
+  Drainer commits them when the operator ships. Do not commit, push or switch branches.
+- If something outside your control blocks the work (a refused path, no network, a
+  missing tool), write a full line in NOTES.md: BLOCKED: <reason>. Do not work around it.
+
+Read BRIEF.md first. For each defect it lists:
+- report evidence (bug as reported)
+- historical fix evidence (prior proof on the defect SSOT — use as context / regression baseline)
+- what to deliver this run under handoff fix-evidence/ and fix-notes/
+
+TASK:
+1. For each defect: read report + historical fix evidence from BRIEF paths; implement fixes only under worktree paths.
+2. Verify (tests / smoke / visual) inside the worktree checkout; compare to historical fix shots when present.
+3. REQUIRED **new** deliverables under this cwd (backend harvests onto the defect):
+   - fix-evidence/<DEF-id>/fix-01.png (and more images as needed)
+   - fix-notes/<DEF-id>.md  (what changed + how verified; note relation to prior fix if any)
+   - NOTES.md (plan + tier per defect, decisions, departures, what you could not verify)
+   - fix-notes must answer EACH acceptance criterion listed for that defect in BRIEF.md.
+     Those criteria are the definition of fixed — not your own reading of the title.
+     If one cannot be met, say so explicitly instead of omitting it.
+4. Visual check when sandbox=workspace: Simulator / app screenshots into fix-evidence/.
+5. Do not claim DONE without those **handoff** files for each fixed defect (historical inventory files alone are not enough for this run).
+6. Reply: DONE BATCH-1

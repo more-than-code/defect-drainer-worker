@@ -125,6 +125,14 @@ type Policy struct {
 	MinSandbox          string   `json:"min_sandbox"`
 	MaxTurns            int      `json:"max_turns"`
 	MaxWallSec          int      `json:"max_wall_sec"`
+	// Additive in 0.2.0-rc3 (worker browser, B4): the host's ceiling for
+	// display. AllowedDomains is policy agent_allowed_domains, MaxCostUSD
+	// policy max_cost_usd (0: unset), Browser policy agent_browser ("": off)
+	// and MaskedSockets the host sockets a browser job's sandbox hides.
+	AllowedDomains []string `json:"allowed_domains"`
+	MaxCostUSD     int      `json:"max_cost_usd"`
+	Browser        string   `json:"browser"`
+	MaskedSockets  []string `json:"masked_sockets"`
 }
 
 type Hello struct {

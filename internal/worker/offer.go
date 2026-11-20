@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,8 +42,13 @@ type decision struct {
 	spec   exec.JobSpec // the narrowed spec
 	host   *hostAdapter
 	notes  []string // log lines on what the policy changed
-	// domains is policy agent_allowed_domains at the decision.
+	// domains are the hosts the agent's sandbox may reach: the spec's
+	// request ∩ policy agent_allowed_domains, or the policy's list.
 	domains []string
+	// browser is policy agent_browser when the job's Browser is effective,
+	// and masked the fresh socket scan its sandbox hides.
+	browser string
+	masked  []string
 }
 
 func declineOf(reason, detail string) decision { return decision{reason: reason, detail: detail} }
@@ -343,6 +350,9 @@ func validateSpec(s exec.JobSpec) error {
 			}
 		}
 	}
+	if err := validatePreview(s.App); err != nil {
+		return err
+	}
 	if s.TestRun != nil {
 		if s.TestRun.SecretEnv != "" && !ValidEnvName(s.TestRun.SecretEnv) {
 			return errors.New("invalid secretEnv")
@@ -541,5 +551,118 @@ func (w *Worker) applyPolicy(spec exec.JobSpec, offerAdapter, offerModel, starte
 	}
 	strip = append(strip, hostPushCredentials...)
 	out.StripEnv = sec.DenySet(h.keep(), strip)
-	return decision{spec: out, host: h, notes: notes, domains: append([]string(nil), pol.AllowedDomains...)}
+
+	domains, dropped := intersectHosts(out.App.AgentHosts, pol.AllowedDomains)
+	for _, d := range dropped {
+		notes = append(notes, "host policy: network host dropped: "+d)
+	}
+	d := decision{spec: out, host: h, notes: notes, domains: domains}
+	w.applyBrowser(&d, pol, chosen)
+	return d
+}
+
+// applyBrowser makes the spec's Browser effective only when the host allows
+// it (B1, B4, B6): policy agent_browser, a ready browser, a claude job (the
+// only adapter whose sandbox settings carry the socket switch) and a
+// complete socket scan, re-run now so the job's masks are fresh. Otherwise
+// Browser is cleared with one job-log note and the job runs without it.
+func (w *Worker) applyBrowser(d *decision, pol Policy, adapter string) {
+	app := &d.spec.App
+	if !app.Browser {
+		return
+	}
+	why := ""
+	switch {
+	case pol.AgentBrowser == "":
+		why = "host policy: browser off (no agent_browser)"
+	case adapter != string(agentadapter.Claude):
+		why = "browser: claude only"
+	case d.spec.Kind != exec.KindBatchFix:
+		why = "browser: fix jobs only"
+	default:
+		if st := w.browserStatus(); !st.Ready {
+			why = "browser not ready: " + st.Reason
+		}
+	}
+	var masked []string
+	if why == "" {
+		var complete bool
+		masked, complete = w.scanSockets(pol)
+		if !complete {
+			why = "browser not ready: " + workerproto.ReasonScanIncomplete
+		}
+	}
+	if why != "" {
+		app.Browser = false
+		d.notes = append(d.notes, why)
+		return
+	}
+	d.browser, d.masked = pol.AgentBrowser, masked
+}
+
+// browserStatus is the last readiness of the browser tool.
+func (w *Worker) browserStatus() workerproto.ToolStatus {
+	for _, t := range w.toolsNow() {
+		if t.Name == workerproto.ToolBrowser {
+			return t
+		}
+	}
+	return workerproto.ToolStatus{Name: workerproto.ToolBrowser, Reason: workerproto.ReasonMissing}
+}
+
+// intersectHosts is B4: no request keeps the policy's list (rc2); a request
+// keeps, in its order, the hosts the policy also allows, and returns the
+// others as dropped.
+func intersectHosts(request, allowed []string) (keep, dropped []string) {
+	if len(request) == 0 {
+		return append([]string(nil), allowed...), nil
+	}
+	for _, h := range request {
+		if slices.Contains(allowed, h) {
+			keep = append(keep, h)
+		} else {
+			dropped = append(dropped, h)
+		}
+	}
+	return keep, dropped
+}
+
+// maxPreviewCmd bounds AppSettings.PreviewCmd.
+const maxPreviewCmd = 512
+
+// validatePreview is the bad_spec check of the browser fields. PreviewCmd
+// runs inside the agent's sandbox (the agent runs dd-shot), so it is not an
+// allow_verify_commands matter; it must still be one line.
+func validatePreview(a exec.AppSettings) error {
+	if len(a.AgentHosts) > 0 && !validDomains(a.AgentHosts) {
+		return errors.New("invalid agentHosts")
+	}
+	if (a.PreviewCmd == "") != (a.PreviewURL == "") {
+		return errors.New("previewCmd and previewUrl go together")
+	}
+	if len(a.PreviewCmd) > maxPreviewCmd || strings.ContainsAny(a.PreviewCmd, "\x00\r\n") {
+		return errors.New("invalid previewCmd")
+	}
+	if a.PreviewURL != "" && !loopbackURL(a.PreviewURL) {
+		return errors.New("previewUrl must be http://127.0.0.1, localhost or [::1] with a port")
+	}
+	return nil
+}
+
+// loopbackURL accepts http://<loopback>:<port>, with at most a "/" path.
+func loopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" || u.User != nil || u.Opaque != "" || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+		return false
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawPath != "" {
+		return false
+	}
+	switch u.Hostname() {
+	case "127.0.0.1", "localhost", "::1":
+	default:
+		return false
+	}
+	port, err := strconv.Atoi(u.Port())
+	return err == nil && port >= 1 && port <= 65535 && u.Port() == strconv.Itoa(port)
 }

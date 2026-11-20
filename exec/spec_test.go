@@ -49,7 +49,9 @@ func fullSpec() JobSpec {
 		App: AppSettings{Sandbox: "strict", Toolchain: "flutter", SimulatorWrites: true, MaxTurns: 80,
 			VerifyCommands: []VerifyCommand{{Repo: "web", Command: "make test"}},
 			RepoEntries:    []RepoEntry{{Name: "web", URL: "/p/web", BaseSource: "local", BaseBranch: "main"}},
-			VerifySkipped:  VerifySkippedHostPolicy, VerifySkippedCommands: 2},
+			VerifySkipped:  VerifySkippedHostPolicy, VerifySkippedCommands: 2,
+			Browser: true, PreviewCmd: "pnpm dev --port 5173 --strictPort", PreviewURL: "http://127.0.0.1:5173",
+			AgentHosts: []string{"registry.npmjs.org"}},
 		Fix: &FixSpec{
 			Batch: Batch{ID: "BATCH-1", AppID: "app_0123456789abcdef", Title: "t", Goal: "g", Status: "in_progress", DefectIDs: []string{"DEF-1"}, Mode: "grok", Created: "c", UpdatedAt: "u", Path: "sqlite:batches/BATCH-1"},
 			Defects: []Defect{{ID: "DEF-1", AppID: "app", Title: "t", Severity: "P1", Status: "open", Area: "a", Client: "c", Surface: "s",

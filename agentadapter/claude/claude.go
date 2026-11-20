@@ -55,9 +55,12 @@ func (a *Adapter) CredentialEnv() []string {
 // allow list in the settings file: {"sandbox": {"network": {"allowedDomains":
 // [...]}}}. Unconfirmed against the CLI until probe P1 (remote-job-fixes
 // spec §8); change them here and nowhere else.
+// allowAllUnixSocketsKey is the switch probe P2 confirmed (Claude Code
+// 2.1.296): headless Chromium needs socket(AF_UNIX) for its profile lock.
 const (
-	sandboxNetworkKey = "network"
-	allowedDomainsKey = "allowedDomains"
+	sandboxNetworkKey      = "network"
+	allowedDomainsKey      = "allowedDomains"
+	allowAllUnixSocketsKey = "allowAllUnixSockets"
 )
 
 // settings is the per-job --settings file.
@@ -116,6 +119,10 @@ func abs(p string) string { return "/" + filepath.Clean(p) }
 //     On a worker it is also the job's clone .git and report evidence;
 //   - the implementer's sandboxed shell may reach t.AllowedDomains, and
 //     nothing else; with none, the file has no network block at all;
+//   - t.UnixSockets (a worker browser job, implementer only) adds
+//     allowAllUnixSockets to the network block, with allowedDomains written
+//     even when empty; the caller has put the host's sockets in DenyRead
+//     (probe P2 runs H–K). Without it the file is rc2's byte for byte;
 //   - t.DenyWrite paths are read-only to the sandboxed shell, for both
 //     roles (spec §4.1.11: on a worker, its own state files and $HOME). An
 //     entry equal to or containing the cwd, a worktree or a ReadOnly path is
@@ -178,15 +185,15 @@ func Settings(t aa.Task) ([]byte, error) {
 	s.Sandbox.AutoAllowBashIfSandboxed = true
 	s.Sandbox.AllowUnsandboxedCommands = false
 	s.Sandbox.FailIfUnavailable = true
-	if t.Role != aa.Implementer || len(t.AllowedDomains) == 0 {
+	if t.Role != aa.Implementer || (len(t.AllowedDomains) == 0 && !t.UnixSockets) {
 		return json.MarshalIndent(s, "", "  ")
 	}
-	return withAllowedDomains(s, t.AllowedDomains)
+	return withNetwork(s, t.AllowedDomains, t.UnixSockets)
 }
 
-// withAllowedDomains marshals s with the sandbox network allow list added
-// under the keys probe P1 confirms.
-func withAllowedDomains(s settings, domains []string) ([]byte, error) {
+// withNetwork marshals s with the sandbox network block added under the keys
+// probes P1 (allowedDomains) and P2 (allowAllUnixSockets) confirm.
+func withNetwork(s settings, domains []string, unixSockets bool) ([]byte, error) {
 	b, err := json.Marshal(s)
 	if err != nil {
 		return nil, err
@@ -195,7 +202,11 @@ func withAllowedDomains(s settings, domains []string) ([]byte, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, err
 	}
-	m["sandbox"][sandboxNetworkKey] = map[string][]string{allowedDomainsKey: append([]string(nil), domains...)}
+	network := map[string]any{allowedDomainsKey: append([]string{}, domains...)}
+	if unixSockets {
+		network[allowAllUnixSocketsKey] = true
+	}
+	m["sandbox"][sandboxNetworkKey] = network
 	return json.MarshalIndent(m, "", "  ")
 }
 

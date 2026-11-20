@@ -426,8 +426,8 @@ func (w *Worker) helloFrame() workerproto.Hello {
 	}
 	return workerproto.Hello{
 		Header: workerproto.NewHeader(workerproto.TypeHello), WorkerID: workerID,
-		Version: Version, Protocol: workerproto.Protocol, Capabilities: []string{workerproto.CapBlobsV1, workerproto.CapGitTokenV1},
-		MaxJobs: pol.MaxJobs, BusyJobIDs: w.busyIDs(), Adapters: st, Tools: w.toolsNow(), Policy: pol.Wire(),
+		Version: Version, Protocol: workerproto.Protocol, Capabilities: []string{workerproto.CapBlobsV1, workerproto.CapGitTokenV1, workerproto.CapBrowserV1},
+		MaxJobs: pol.MaxJobs, BusyJobIDs: w.busyIDs(), Adapters: st, Tools: w.toolsNow(), Policy: w.wirePolicy(pol),
 	}
 }
 
@@ -437,7 +437,7 @@ func (w *Worker) statusFrame() workerproto.Status {
 	pol := w.policy
 	w.mu.Unlock()
 	return workerproto.Status{
-		Header: workerproto.NewHeader(workerproto.TypeStatus), Adapters: st, Tools: w.toolsNow(), Policy: pol.Wire(),
+		Header: workerproto.NewHeader(workerproto.TypeStatus), Adapters: st, Tools: w.toolsNow(), Policy: w.wirePolicy(pol),
 		MaxJobs: pol.MaxJobs, BusyJobIDs: w.busyIDs(),
 	}
 }
@@ -448,14 +448,54 @@ func (w *Worker) toolsNow() []workerproto.ToolStatus {
 	return append([]workerproto.ToolStatus(nil), w.tools...)
 }
 
-// recheckTools probes git and stores the result (display only). It runs on
-// hello and in the 5-minute readiness loop, never inside an offer's answer
-// window.
+// recheckTools probes git and stores the result (display only). With policy
+// agent_browser set it also checks the browser and scans the host sockets
+// (B2); the browser entry is sent only then, because a server before
+// browser.v1 refuses the name. It runs on hello and in the 5-minute
+// readiness loop, never inside an offer's answer window.
 func (w *Worker) recheckTools(ctx context.Context) {
 	tools := checkTools(ctx)
 	w.mu.Lock()
-	w.tools = tools
+	pol := w.policy
 	w.mu.Unlock()
+	var masked []string
+	if pol.Usable() && pol.AgentBrowser != "" {
+		var complete bool
+		masked, complete = w.scanSockets(pol)
+		tools = append(tools, checkBrowser(ctx, pol.AgentBrowser, w.opts.OwnerUID, complete))
+	}
+	w.mu.Lock()
+	w.tools = tools
+	w.masked = masked
+	w.mu.Unlock()
+}
+
+// scanSockets runs the host socket scan for pol and logs the masks it had
+// to refuse (they would hide the worker's own state).
+func (w *Worker) scanSockets(pol Policy) ([]string, bool) {
+	scan := newSocketScan(w.opts.Paths, pol.DenySockets)
+	if w.scanOverride != nil {
+		scan = w.scanOverride(scan)
+	}
+	masked, dropped, complete := scan.run()
+	for _, d := range dropped {
+		w.logf("socket scan: not masking %s (it holds the worker's state)", d)
+	}
+	return masked, complete
+}
+
+// wirePolicy is pol as hello and status send it, with the last socket scan.
+func (w *Worker) wirePolicy(pol Policy) workerproto.Policy {
+	wp := pol.Wire()
+	if wp.Valid && wp.Browser != "" {
+		w.mu.Lock()
+		wp.MaskedSockets = append([]string{}, w.masked...)
+		w.mu.Unlock()
+		if len(wp.MaskedSockets) > workerproto.MaxMaskedSockets {
+			wp.MaskedSockets = wp.MaskedSockets[:workerproto.MaxMaskedSockets]
+		}
+	}
+	return wp
 }
 
 // checkReadiness probes every adapter under its job child env, and git

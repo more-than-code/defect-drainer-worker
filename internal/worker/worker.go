@@ -103,6 +103,11 @@ type Worker struct {
 	revoked    bool
 
 	redactor redact.Exact
+
+	// masked is the last socket scan's list (policy agent_browser only).
+	masked []string
+	// scanOverride, set by tests, adjusts the socket scan (roots, uid).
+	scanOverride func(socketScan) socketScan
 }
 
 // New loads the credential, policy and secrets and recovers jobs left by a
