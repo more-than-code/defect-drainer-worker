@@ -119,7 +119,7 @@ func (j *job) launch(d decision, leaseID string) {
 	_ = j.saveMetaLocked()
 	j.mu.Unlock()
 
-	out, err := exec.Start(ctx, d.host.host(w.opts.Paths, j.id, spec.Model), spec, runSink{j: j, gen: gen}, exec.Hooks{})
+	out, err := exec.Start(ctx, d.host.host(w.opts.Paths, j.id, spec.Model, spec.Worktrees, d.domains), spec, runSink{j: j, gen: gen}, exec.Hooks{})
 	if err != nil {
 		j.fail(gen, withCode(err))
 		return

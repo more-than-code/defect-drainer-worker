@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/more-than-code/defect-drainer-worker/agentadapter"
 	"github.com/more-than-code/defect-drainer-worker/exec"
 	"github.com/more-than-code/defect-drainer-worker/workerproto"
 )
@@ -39,6 +40,8 @@ type decision struct {
 	spec   exec.JobSpec // the narrowed spec
 	host   *hostAdapter
 	notes  []string // log lines on what the policy changed
+	// domains is policy agent_allowed_domains at the decision.
+	domains []string
 }
 
 func declineOf(reason, detail string) decision { return decision{reason: reason, detail: detail} }
@@ -471,6 +474,14 @@ func (w *Worker) applyPolicy(spec exec.JobSpec, offerAdapter, offerModel, starte
 		out.App.SimulatorWrites = false
 		notes = append(notes, "host policy: simulator writes off")
 	}
+	// D1: only grok has a workspace profile. Every other adapter runs its
+	// CLI's own sandbox, strict, so the brief, the prompt and the
+	// NO-SCREENSHOT release all see strict.
+	if chosen != string(agentadapter.Grok) && (out.App.Sandbox != SandboxStrict || out.App.SimulatorWrites) {
+		out.App.Sandbox = SandboxStrict
+		out.App.SimulatorWrites = false
+		notes = append(notes, "sandbox strict for "+chosen)
+	}
 
 	// Caps: clamped to max_turns and max_wall_sec.
 	if out.App.MaxTurns > pol.MaxTurns || (out.App.MaxTurns == 0 && pol.MaxTurns < DefaultMaxTurns) {
@@ -490,8 +501,27 @@ func (w *Worker) applyPolicy(spec exec.JobSpec, offerAdapter, offerModel, starte
 		out.Caps.ReviewMaxWallSec = pol.MaxWallSec
 	}
 
+	// Cost cap (D5): the server's, lowered by policy max_cost_usd, else the
+	// policy's, else the default. A worker can lower the cap, never raise it.
+	capUSD := out.Caps.AgentMaxCostUSD
+	switch {
+	case capUSD > 0 && pol.MaxCostUSD > 0 && float64(pol.MaxCostUSD) < capUSD:
+		capUSD = float64(pol.MaxCostUSD)
+		notes = append(notes, fmt.Sprintf("host policy: max cost clamped to $%d", pol.MaxCostUSD))
+	case capUSD <= 0 && pol.MaxCostUSD > 0:
+		capUSD = float64(pol.MaxCostUSD)
+	case capUSD <= 0:
+		capUSD = DefaultAgentMaxCostUSD
+	}
+	out.Caps.AgentMaxCostUSD = capUSD
+
 	// Verify commands are org-admin shell: only with allow_verify_commands.
+	// VerifySkipped is the worker's own record: one the server sent is
+	// dropped first.
+	out.App.VerifySkipped, out.App.VerifySkippedCommands = "", 0
 	if len(out.App.VerifyCommands) > 0 && !pol.AllowVerifyCommands {
+		out.App.VerifySkipped = exec.VerifySkippedHostPolicy
+		out.App.VerifySkippedCommands = len(out.App.VerifyCommands)
 		out.App.VerifyCommands = nil
 		out.Baseline = nil
 		notes = append(notes, "verify skipped by host policy")
@@ -511,5 +541,5 @@ func (w *Worker) applyPolicy(spec exec.JobSpec, offerAdapter, offerModel, starte
 	}
 	strip = append(strip, hostPushCredentials...)
 	out.StripEnv = sec.DenySet(h.keep(), strip)
-	return decision{spec: out, host: h, notes: notes}
+	return decision{spec: out, host: h, notes: notes, domains: append([]string(nil), pol.AllowedDomains...)}
 }

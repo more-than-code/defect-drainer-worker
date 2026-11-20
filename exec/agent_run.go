@@ -15,14 +15,17 @@ import (
 // artifacts on disk, not in the child's exit code or its prose (K6), so this
 // is where an operator sees why the loop stopped.
 type AgentRun struct {
-	Iterations           int      `json:"iterations"`
-	CompletedByArtifacts bool     `json:"completedByArtifacts"`
-	StoppedBy            string   `json:"stoppedBy,omitempty"`
-	StopReasons          []string `json:"stopReasons,omitempty"`
-	Turns                int      `json:"turns,omitempty"`
-	TotalCostUSD         float64  `json:"totalCostUsd,omitempty"`
-	SessionID            string   `json:"sessionId,omitempty"`
-	Missing              []string `json:"missing,omitempty"`
+	Iterations           int    `json:"iterations"`
+	CompletedByArtifacts bool   `json:"completedByArtifacts"`
+	StoppedBy            string `json:"stoppedBy,omitempty"`
+	// StopReason is the agent's own words for a "blocked" stop (its
+	// BLOCKED: line, at most 200 characters). Additive.
+	StopReason   string   `json:"stopReason,omitempty"`
+	StopReasons  []string `json:"stopReasons,omitempty"`
+	Turns        int      `json:"turns,omitempty"`
+	TotalCostUSD float64  `json:"totalCostUsd,omitempty"`
+	SessionID    string   `json:"sessionId,omitempty"`
+	Missing      []string `json:"missing,omitempty"`
 	// Resumes counts operator Resumes. Iterations, turns and cost above are
 	// cumulative across every run of the job, not just the latest.
 	Resumes int `json:"resumes,omitempty"`
@@ -42,6 +45,13 @@ const (
 	StoppedByWall       = "wall"
 	StoppedByExit       = "exit"
 	StoppedByCancelled  = "cancelled"
+	// The agent declared a blocker (a BLOCKED: line in NOTES.md).
+	StoppedByBlocked = "blocked"
+	// Two iterations in a row changed nothing (ProgressFingerprint) and left
+	// the same artifacts missing.
+	StoppedByNoProgress = "no_progress"
+	// The job's total agent cost reached Caps.AgentMaxCostUSD.
+	StoppedByBudget = "budget"
 )
 
 // Loop caps. Wall covers only the driver loop — never baseline or verify,
@@ -178,8 +188,27 @@ func ArtifactsComplete(handoff string, defectIDs []string, sandbox string, cutof
 	return len(missing) == 0, missing
 }
 
+// LoopState is what NextLoopStop judges after one iteration.
+type LoopState struct {
+	Iter, MaxIters   int
+	Elapsed, MaxWall time.Duration
+	ExitErr          error
+	SawMaxTurns      bool
+	Complete         bool
+	// Blocked: NOTES.md has a fresh BLOCKED: line.
+	Blocked bool
+	// NoProgress: this iteration's fingerprint and missing list equal the
+	// previous iteration's.
+	NoProgress bool
+	// CostUSD is the job's total so far (Resumes included); MaxCostUSD <= 0
+	// disables the budget rule.
+	CostUSD, MaxCostUSD float64
+}
+
 // NextLoopStop decides whether the driver loop stops, and why. Empty means
-// iterate again. First match wins.
+// iterate again. First match wins:
+//
+//	exit → artifacts → blocked → no_progress → budget → wall → iterations
 //
 // The exit-code rule is the subtle one. Turn exhaustion also exits non-zero
 // (verified on Grok Build 1.0.40: exit 1, stopReason "cancelled", plus a
@@ -187,20 +216,26 @@ func ArtifactsComplete(handoff string, defectIDs []string, sandbox string, cutof
 // turn cap as a job failure and never resume — which is the whole point of the
 // loop. sawMaxTurns is the positive signal that separates the two.
 //
-// complete is checked before the caps: if the worker delivered the artifacts on
-// its last legal iteration, that is why the loop stopped, and the operator
-// should not see it reported as having run out of budget.
-func NextLoopStop(iter, maxIters int, elapsed, maxWall time.Duration, exitErr error, sawMaxTurns, complete bool) string {
-	if exitErr != nil && !sawMaxTurns {
+// complete is checked before the other rules: if the worker delivered the
+// artifacts on its last legal iteration, that is why the loop stopped, and the
+// operator should not see it reported as having run out of budget. The agent's
+// own blocker comes next because it says the most; budget precedes the wall
+// and iteration caps because it is the money rule.
+func NextLoopStop(st LoopState) string {
+	switch {
+	case st.ExitErr != nil && !st.SawMaxTurns:
 		return StoppedByExit
-	}
-	if complete {
+	case st.Complete:
 		return StoppedByArtifacts
-	}
-	if elapsed >= maxWall {
+	case st.Blocked:
+		return StoppedByBlocked
+	case st.NoProgress:
+		return StoppedByNoProgress
+	case st.MaxCostUSD > 0 && st.CostUSD >= st.MaxCostUSD:
+		return StoppedByBudget
+	case st.Elapsed >= st.MaxWall:
 		return StoppedByWall
-	}
-	if iter >= maxIters {
+	case st.Iter >= st.MaxIters:
 		return StoppedByIterations
 	}
 	return ""
@@ -318,6 +353,13 @@ func (a *AgentRunAcc) TakeMaxTurns() bool {
 	return v
 }
 
+// CostUSD is the job's total agent cost so far, Resumes included.
+func (a *AgentRunAcc) CostUSD() float64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.costUSD
+}
+
 func (a *AgentRunAcc) Snapshot(iter int, stoppedBy string, missing []string) *AgentRun {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -372,6 +414,12 @@ func LoopIterationLine(iter int, exitErr error, sawMaxTurns, complete bool, stop
 		parts = append(parts, "stopping: wall clock")
 	case StoppedByExit:
 		parts = append(parts, "stopping: agent failed")
+	case StoppedByBlocked:
+		parts = append(parts, "stopping: agent declared a blocker")
+	case StoppedByNoProgress:
+		parts = append(parts, "stopping: no progress in two iterations")
+	case StoppedByBudget:
+		parts = append(parts, "stopping: cost cap reached")
 	}
 	return strings.Join(parts, " — ")
 }
@@ -380,7 +428,7 @@ func LoopLevel(stoppedBy string) string {
 	switch stoppedBy {
 	case StoppedByExit:
 		return "error"
-	case StoppedByIterations, StoppedByWall:
+	case StoppedByIterations, StoppedByWall, StoppedByBlocked, StoppedByNoProgress, StoppedByBudget:
 		return "warn"
 	default:
 		return "info"

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,6 +89,11 @@ func (r *run) emit(e Event) error {
 		d.Line = redact(d.Line)
 		e.Done = &d
 	}
+	if e.AgentRun != nil && e.AgentRun.StopReason != "" {
+		ar := *e.AgentRun
+		ar.StopReason = redact(ar.StopReason)
+		e.AgentRun = &ar
+	}
 	return r.sink.Apply(e)
 }
 
@@ -157,6 +163,11 @@ func (r *run) writeHandoff() error {
 		return nil
 	}
 	in := BatchFixBriefInput{DefectsRoot: s.DefectsRoot, GrokSandbox: s.App.Sandbox, Worktrees: s.Worktrees}
+	// Only Claude's settings carry the host's network allow list.
+	if r.host.AgentAdapter().Name() == agentadapter.Claude {
+		in.AllowedDomains = r.host.AllowedDomains
+		in.NoNetwork = len(in.AllowedDomains) == 0
+	}
 	if s.Fix != nil {
 		in.Batch = s.Fix.Batch
 		in.Defects = s.Fix.Defects
@@ -344,6 +355,11 @@ func (r *run) start() (Outcome, error) {
 			StateDir:   r.host.StateDir(s.JobID),
 			Timeout:    agentTimeout,
 			DenyRead:   r.host.DenyRead(),
+			// On a worker: the job's clone .git (read-only git) and its
+			// report evidence (spec §4.1 items 2 and 5).
+			ReadOnly:       r.host.ReadOnly,
+			AllowedDomains: r.host.AllowedDomains,
+			DenyWrite:      r.host.DenyWrite,
 
 			GrokBypassPermissions: s.Caps.GrokBypassPermissions,
 			GrokTools:             s.Caps.GrokTools,
@@ -398,6 +414,9 @@ func (r *run) start() (Outcome, error) {
 		return Outcome{}, nil
 	}
 
+	// NOTES.md as it stands before the agent's first turn: a BLOCKED: line
+	// counts only once the content changes (BlockedReason).
+	notesAtStart := NotesDigest(handoff, r.harvestCutoff())
 	cmd, flush, err := startIter(false, s.ResumeSession)
 	if err != nil {
 		return Outcome{}, err
@@ -435,10 +454,12 @@ func (r *run) start() (Outcome, error) {
 		// turn exhaustion and resumes; anything else non-zero is a real failure.
 		curProc, curFlush := proc, flush
 		iter := 1
-		stoppedBy := ""
-		var missing []string
+		stoppedBy, stopReason := "", ""
+		var missing, prevMissing []string
+		prevFP := ""
 		var exitErr error
 		cutoff := r.harvestCutoff()
+		maxCost := s.Caps.AgentMaxCostUSD
 		for {
 			exitErr = curProc.Reap()
 			if curFlush != nil {
@@ -459,13 +480,33 @@ func (r *run) start() (Outcome, error) {
 
 			complete, miss := r.complete(cutoff)
 			missing = miss
-			stoppedBy = NextLoopStop(iter, maxIters, time.Since(loopStart), maxWall, exitErr, sawMaxTurns, complete)
+			reason, blocked := BlockedReason(handoff, cutoff, notesAtStart)
+			fp := ProgressFingerprint(handoff, wts)
+			noProgress := iter >= 2 && fp == prevFP && slices.Equal(missing, prevMissing)
+			prevFP, prevMissing = fp, missing
+			stoppedBy = NextLoopStop(LoopState{
+				Iter: iter, MaxIters: maxIters,
+				Elapsed: time.Since(loopStart), MaxWall: maxWall,
+				ExitErr: exitErr, SawMaxTurns: sawMaxTurns, Complete: complete,
+				Blocked: blocked, NoProgress: noProgress,
+				CostUSD: acc.CostUSD(), MaxCostUSD: maxCost,
+			})
+			if stoppedBy == StoppedByBlocked {
+				stopReason = reason
+			}
 
 			// Recorded after every iteration so a killed loop still leaves its
 			// cost and stop reasons on disk.
-			_ = r.emit(Event{Kind: EventAgentRun, AgentRun: runRecord(iter, stoppedBy, missing), Lines: []LogLine{
-				guarded(LoopIterationLine(priorIters+iter, exitErr, sawMaxTurns, complete, stoppedBy, missing), LoopLevel(stoppedBy)),
-			}})
+			rec := runRecord(iter, stoppedBy, missing)
+			rec.StopReason = stopReason
+			lines := []LogLine{guarded(LoopIterationLine(priorIters+iter, exitErr, sawMaxTurns, complete, stoppedBy, missing), LoopLevel(stoppedBy))}
+			switch stoppedBy {
+			case StoppedByBlocked:
+				lines = append(lines, guarded("blocked: "+stopReason, "warn"))
+			case StoppedByBudget:
+				lines = append(lines, guarded(fmt.Sprintf("cost $%.2f reached the job's cap of $%.2f", acc.CostUSD(), maxCost), "warn"))
+			}
+			_ = r.emit(Event{Kind: EventAgentRun, AgentRun: rec, Lines: lines})
 			if stoppedBy != "" {
 				break
 			}
@@ -546,14 +587,23 @@ func (r *run) afterFixLoop(fin loopFinish, log func(line, level string)) {
 		if !verdict.Ok {
 			level = "warn"
 		}
+		summary := "verify: " + SummarizeVerdict(verdict)
+		// D6: commands dropped by the host's policy are a skip, never a
+		// pass. The run records why and resolves nothing.
+		skipped := s.App.VerifySkipped != ""
+		if skipped {
+			vrun.Ran, vrun.Ok, vrun.SkippedReason = false, false, s.App.VerifySkipped
+			summary = fmt.Sprintf("verify: skipped by %s (%d command(s) configured)", s.App.VerifySkipped, s.App.VerifySkippedCommands)
+			level = "warn"
+		}
 		cp := vrun
 		h := hygiene
 		_ = r.emit(Event{Kind: EventVerification, Verification: &cp, DiffHygiene: &h, Baseline: fin.baseline, Lines: []LogLine{
-			guarded("verify: "+SummarizeVerdict(verdict), level),
+			guarded(summary, level),
 			guarded(r.host.LogSource()+" process exited OK — reviewing, then harvesting fix-evidence…", "info"),
 		}})
 		harvest.Verification = &vrun
-		harvest.AllowResolve = true
+		harvest.AllowResolve = !skipped
 	}
 	if r.sink.Cancelled() {
 		return
@@ -802,7 +852,8 @@ func (r *run) reviewLens(fin loopFinish, rev *ReviewRun, lens, brief string, ids
 		Credential: r.host.CredentialFor(r.spec.JobID),
 		StateDir:   r.host.StateDir(r.spec.JobID),
 		DenyRead:   r.host.DenyRead(),
-		ReadOnly:   ReviewReadOnly(fin.handoff),
+		ReadOnly:   append(ReviewReadOnly(fin.handoff), r.host.ReadOnly...),
+		DenyWrite:  r.host.DenyWrite,
 		Cwd:        dir,
 		Prompt:     reviewAgentPrompt,
 		MaxTurns:   maxTurns,

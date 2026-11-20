@@ -88,7 +88,17 @@ type AppSettings struct {
 	MaxTurns        int             `json:"maxTurns,omitempty"`
 	VerifyCommands  []VerifyCommand `json:"verifyCommands,omitempty"`
 	RepoEntries     []RepoEntry     `json:"repoEntries,omitempty"`
+	// VerifySkipped is why VerifyCommands were dropped before the run
+	// ("host policy"), and VerifySkippedCommands how many there were. Set
+	// only by a worker at offer; a run with VerifySkipped never resolves a
+	// defect (spec D6).
+	VerifySkipped         string `json:"verifySkipped,omitempty"`
+	VerifySkippedCommands int    `json:"verifySkippedCommands,omitempty"`
 }
+
+// VerifySkippedHostPolicy is VerifySkipped when a worker's policy has
+// allow_verify_commands off.
+const VerifySkippedHostPolicy = "host policy"
 
 // FixSpec is what a batch fix's brief is built from.
 type FixSpec struct {
@@ -124,6 +134,9 @@ type Caps struct {
 	ReviewOff        bool `json:"reviewOff,omitempty"`
 	ReviewMaxTurns   int  `json:"reviewMaxTurns"`
 	ReviewMaxWallSec int  `json:"reviewMaxWallSec"`
+	// AgentMaxCostUSD stops the loop once the job's total agent cost (every
+	// run of it, Resumes included) reaches it. Zero or less: no cost rule.
+	AgentMaxCostUSD float64 `json:"agentMaxCostUsd,omitempty"`
 
 	// The host's grok knobs, read by the orchestrator so this package reads
 	// no DD setting (W1a deviation Q1, moved in W2b). AgentMaxTurnsArg is the

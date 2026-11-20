@@ -300,6 +300,13 @@ These close the local-only assumptions in W1a's seam. The `local` transport keep
 5. **`Control`** gains `requestId`, `specUrl`, `repo` and `repos []ShipRepo{repo, files, message, title, body}` (§6.3). New kinds: `ship_preview`, `diff`, `ship`, `discard`.
 6. **Adapter choice (Q4):** `JobSpec` gains `adapter` (empty means the worker picks, per §5.1) and `model`. Resume and Rerun specs carry the adapter that **started** the job.
 7. **Seq:** `seq` stays at frame level only. `exec.Event` is unchanged.
+8. **Remote job fixes (worker 0.2.0-rc2, additive; old peers ignore every field under §2):**
+   - `JobSpec.Caps.agentMaxCostUsd` (number, optional): the per-job agent cost cap. The worker lowers it to policy `max_cost_usd` when that is smaller; with none from the server it uses the policy value, else 5. The loop counts the job's total, Resumes included.
+   - `JobSpec.App.verifySkipped` (string, optional, `"host policy"`) and `verifySkippedCommands` (number, optional): set **only by the worker** at offer when policy `allow_verify_commands` is false and the spec had verify commands. A value from the server is dropped. Such a run records `verification {ran:false, skippedReason}` and its harvest has `allowResolve:false`, so no defect resolves.
+   - `VerificationRun.skippedReason` (string, optional).
+   - `AgentRun.stoppedBy` gains `blocked` (a `BLOCKED: <reason>` line in `NOTES.md`), `no_progress` (two iterations in a row changed nothing and left the same artifacts missing) and `budget` (the cost cap was reached). A stop of any of these still verifies, reviews and harvests, like `iterations`. The loop checks, first match wins: `exit`, `artifacts`, `blocked`, `no_progress`, `budget`, `wall`, `iterations`.
+   - `AgentRun.stopReason` (string, optional): the agent's reason for `blocked`, at most 200 characters.
+   - `JobSpec.App.sandbox`: for any adapter but grok the worker narrows it to `strict` (and `simulatorWrites` to false) at offer.
 
 ## 9. Errors and job reasons
 
@@ -328,6 +335,8 @@ These close the local-only assumptions in W1a's seam. The `local` transport keep
 | reason | `lfs_missing` | the repo uses Git LFS and the host has no `git-lfs` (W3, additive) |
 | reason | `spool_full` | one job exceeded the spool cap |
 | reason | `agent_auth` | unchanged |
+
+**Policy reasons** (`dd-worker policy check`, the hello `policy` block's reason; additive in 0.2.0-rc2): `bad_agent_allowed_domains` (not exact lowercase hostnames, a wildcard, an IP address, a duplicate, or more than 16) and `bad_max_cost_usd` (not 1 to 100). A worker before 0.2.0-rc2 reports both keys as `unknown_key`.
 
 ## 10. Capabilities
 

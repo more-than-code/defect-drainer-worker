@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -181,7 +182,9 @@ func TestImplementerArgvAndEnv(t *testing.T) {
 		}
 	}
 	wantEnv := []string{"PATH=/bin", "ANTHROPIC_API_KEY=sk-test-key", "CLAUDE_CONFIG_DIR=/data/agent-state/j1/claude-config",
-		"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "CI=1", "SKILL_FORGE_AGENT_ROLE=worker"}
+		"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "CI=1", "SKILL_FORGE_AGENT_ROLE=worker",
+		// §4.1.11: tool caches under the cwd, off $HOME.
+		"npm_config_cache=/data/batch-jobs/j1/.cache/npm", "XDG_CACHE_HOME=/data/batch-jobs/j1/.cache"}
 	if !slices.Equal(c.Env, wantEnv) {
 		t.Fatalf("env = %q", c.Env)
 	}
@@ -387,5 +390,150 @@ func TestReviewerReadsJobNotesReadOnly(t *testing.T) {
 	tk.ReadOnly = []string{"relative/BRIEF.md"}
 	if _, err := Settings(tk); err == nil {
 		t.Fatal("a relative read-only path must be refused")
+	}
+}
+
+// RF-a item 2 (D2): on a worker, the job's clone .git sits under the denied
+// {state}/repos. It is re-allowed for reading only, the repos dir stays in
+// denyRead, and another clone is neither read-allowed nor re-allowed.
+func TestWorkerCloneGitReadOnly(t *testing.T) {
+	for _, role := range []aa.Role{aa.Implementer, aa.Reviewer} {
+		tk := task(role, aa.APIKey)
+		tk.DenyRead = []string{"/state/repos", "/state/jobs"}
+		tk.ReadOnly = []string{"/state/repos/aaa/.git", "/state/jobs/j1/evidence"}
+		body, err := Settings(tk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var s settings
+		if err := json.Unmarshal(body, &s); err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"Read(//state/repos/aaa/.git/**)", "Read(//state/jobs/j1/evidence/**)"} {
+			if !slices.Contains(s.Permissions.Allow, want) {
+				t.Errorf("%v: allow lacks %q", role, want)
+			}
+		}
+		if !slices.Contains(s.Sandbox.Filesystem.DenyRead, "//state/repos") || !slices.Contains(s.Sandbox.Filesystem.DenyRead, "//state/jobs") {
+			t.Errorf("%v: denyRead = %q", role, s.Sandbox.Filesystem.DenyRead)
+		}
+		for _, want := range []string{"//state/repos/aaa/.git", "//state/jobs/j1/evidence"} {
+			if !slices.Contains(s.Sandbox.Filesystem.AllowRead, want) {
+				t.Errorf("%v: allowRead lacks %q", role, want)
+			}
+		}
+		if strings.Contains(string(body), "Edit(//state") || strings.Contains(string(body), "/state/repos/bbb") {
+			t.Fatalf("%v: clone editable or another clone allowed: %s", role, body)
+		}
+	}
+}
+
+// RF-a item 4 (D3): the allowed hosts reach the implementer's sandbox only,
+// and a task without any writes exactly the file it wrote before.
+func TestAllowedDomains(t *testing.T) {
+	tk := task(aa.Implementer, aa.APIKey)
+	before, err := Settings(tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(before), sandboxNetworkKey) {
+		t.Fatalf("no domains, yet a network block: %s", before)
+	}
+	tk.AllowedDomains = []string{"registry.npmjs.org"}
+	body, err := Settings(tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Sandbox map[string]json.RawMessage `json:"sandbox"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	var net map[string][]string
+	if err := json.Unmarshal(m.Sandbox[sandboxNetworkKey], &net); err != nil || !slices.Equal(net[allowedDomainsKey], []string{"registry.npmjs.org"}) {
+		t.Fatalf("network = %s (%v)", m.Sandbox[sandboxNetworkKey], err)
+	}
+	// Everything else is unchanged.
+	var a, b settings
+	_ = json.Unmarshal(before, &a)
+	_ = json.Unmarshal(body, &b)
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("domains changed other settings:\n%s\n%s", before, body)
+	}
+	tk.Role = aa.Reviewer
+	if body, _ := Settings(tk); strings.Contains(string(body), sandboxNetworkKey) {
+		t.Fatalf("reviewer got network: %s", body)
+	}
+}
+
+// §4.1.11 (F11): DenyWrite reaches the sandbox for both roles; none writes
+// the same file as before; an entry over the agent's own or read-only
+// paths is refused.
+func TestDenyWrite(t *testing.T) {
+	for _, role := range []aa.Role{aa.Implementer, aa.Reviewer} {
+		tk := task(role, aa.APIKey)
+		before, err := Settings(tk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(before), "denyWrite") {
+			t.Fatalf("%v: no entries, yet denyWrite: %s", role, before)
+		}
+		tk.ReadOnly = []string{"/state/repos/aaa/.git"}
+		tk.DenyWrite = []string{"/state/status.json", "/state/readiness", "/home/w"}
+		body, err := Settings(tk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var s settings
+		if err := json.Unmarshal(body, &s); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(s.Sandbox.Filesystem.DenyWrite, []string{"//state/status.json", "//state/readiness", "//home/w"}) {
+			t.Fatalf("%v: denyWrite = %q", role, s.Sandbox.Filesystem.DenyWrite)
+		}
+		for _, bad := range []string{
+			"/data",                 // contains the handoff and the worktrees
+			"/data/batch-jobs/j1",   // the handoff itself
+			"/data/wt/a",            // a worktree
+			"/state/repos",          // contains a read-only path
+			"/state/repos/aaa/.git", // a read-only path
+			"relative/dir",          // not absolute
+		} {
+			tk.DenyWrite = []string{"/state/status.json", bad}
+			if _, err := Settings(tk); err == nil {
+				t.Errorf("%v: deny-write %q accepted", role, bad)
+			}
+		}
+		// A sibling of an own dir is fine.
+		tk.DenyWrite = []string{"/data/wt/ab", "/data/batch-jobs/j10"}
+		if _, err := Settings(tk); err != nil {
+			t.Errorf("%v: sibling refused: %v", role, err)
+		}
+	}
+}
+
+// §4.1.11: both roles get the caches under their own cwd, over inherited
+// values.
+func TestCacheEnvUnderCwd(t *testing.T) {
+	a := New(Config{Bin: "/usr/bin/claude"})
+	for _, role := range []aa.Role{aa.Implementer, aa.Reviewer} {
+		tk := task(role, aa.APIKey)
+		tk.Handoff = "/data/batch-jobs/j1/review/spec"
+		tk.Env = append(tk.Env, "npm_config_cache=/home/w/.npm", "NPM_CONFIG_CACHE=/home/w/.npm", "XDG_CACHE_HOME=/home/w/.cache")
+		c, err := a.Command(tk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := aa.GetEnv(c.Env, "npm_config_cache"); got != "/data/batch-jobs/j1/review/spec/.cache/npm" {
+			t.Errorf("%v: npm_config_cache = %q", role, got)
+		}
+		if got := aa.GetEnv(c.Env, "XDG_CACHE_HOME"); got != "/data/batch-jobs/j1/review/spec/.cache" {
+			t.Errorf("%v: XDG_CACHE_HOME = %q", role, got)
+		}
+		if aa.GetEnv(c.Env, "NPM_CONFIG_CACHE") != "" || strings.Contains(strings.Join(c.Env, "\n"), "/home/w") {
+			t.Errorf("%v: an inherited cache survived: %q", role, c.Env)
+		}
 	}
 }

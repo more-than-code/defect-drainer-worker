@@ -257,6 +257,10 @@ Do not stop early. Required artifacts (exact; Defect Drainer matches these, not 
 - if the sandbox is strict and you cannot screenshot, a full line:
   NO-SCREENSHOT: <DEF-id>
   (that stops the loop only; harvest will not resolve without a new image)
+- if something outside your control blocks the work, a full line:
+  BLOCKED: <reason>
+  (that stops the loop; delete the line once the blocker is gone)
+Leave your changes uncommitted; Defect Drainer commits them when the operator ships.
 Do not invent other marker spellings. Do not delegate onward.`
 
 // CodingAgentOpts is extra spawn wiring (toolchain PATH, job-scoped sandbox
@@ -310,6 +314,13 @@ type CodingAgentOpts struct {
 	StateDir   string
 	Timeout    time.Duration
 	DenyRead   []string
+	// ReadOnly are paths the agent may read but never edit (on a worker:
+	// the job's repo clone .git and its report evidence). AllowedDomains are
+	// the hosts its sandbox may reach. Both go to the adapter's Task.
+	ReadOnly       []string
+	AllowedDomains []string
+	// DenyWrite goes to the adapter's Task (spec §4.1.11).
+	DenyWrite []string
 }
 
 // agentStream parses streaming-json (NDJSON) stdout **before** lineForwarder
@@ -573,7 +584,7 @@ func buildBatchFixCLIPrompt(handoffAbs, batchID, defectsRoot, sandbox string, wo
 	}
 	var sandboxNotes []string
 	if opts != nil && opts.Adapter != nil && opts.Adapter.Name() != agentadapter.Grok {
-		sandboxNotes = adapterSandboxNotes(opts.Adapter, handoffAbs, defectsRoot)
+		sandboxNotes = adapterSandboxNotes(opts.Adapter, handoffAbs, defectsRoot, opts.ReadOnly, opts.AllowedDomains)
 	} else if sandbox == "workspace" {
 		sandboxNotes = []string{
 			"SANDBOX: --sandbox workspace (App Settings).",
@@ -651,8 +662,10 @@ func buildBatchFixCLIPrompt(handoffAbs, batchID, defectsRoot, sandbox string, wo
 		"  the operator starting this batch IS the approval. Do not wait to be approved.",
 		"- Run the verification commands yourself inside the worktree. DD re-runs them after",
 		"  you exit; a result you claim but did not observe is a defect in your notes, not a pass.",
-		"- Commit on the worktree branch already checked out. Do not push. Do not commit on",
-		"  main/master. Do not commit BRIEF.md / PROCESS.md / SKILLS.md / NOTES.md.",
+		"- Leave your changes uncommitted in the worktree branch already checked out; Defect",
+		"  Drainer commits them when the operator ships. Do not commit, push or switch branches.",
+		"- If something outside your control blocks the work (a refused path, no network, a",
+		"  missing tool), write a full line in NOTES.md: BLOCKED: <reason>. Do not work around it.",
 		"",
 		"Read BRIEF.md first. For each defect it lists:",
 		"- report evidence (bug as reported)",
@@ -773,6 +786,9 @@ func StartCodingAgent(handoffAbs, batchID, defectsRoot string, worktrees []Workt
 		task.StateDir = opts.StateDir
 		task.Timeout = opts.Timeout
 		task.DenyRead = opts.DenyRead
+		task.ReadOnly = opts.ReadOnly
+		task.AllowedDomains = opts.AllowedDomains
+		task.DenyWrite = opts.DenyWrite
 		for _, v := range opts.VerifyCommands {
 			task.AllowCommands = append(task.AllowCommands, v.Command)
 		}
@@ -923,6 +939,7 @@ type ReviewAgentOpts struct {
 	Credential agentadapter.Credential
 	StateDir   string
 	DenyRead   []string
+	DenyWrite  []string
 	// Register runs after Start and before Wait so the caller can publish the
 	// process. The returned func is the single Wait — pass spawnedProc.reap,
 	// because Cmd.Wait must not run twice. Nil uses Cmd.Wait.
@@ -981,6 +998,7 @@ func StartReviewAgent(opts ReviewAgentOpts) (ReviewResult, error) {
 		Credential: opts.Credential,
 		StateDir:   opts.StateDir,
 		DenyRead:   opts.DenyRead,
+		DenyWrite:  opts.DenyWrite,
 		Timeout:    opts.Wall,
 		Env:        childBaseEnv(adapter, opts.StripEnv),
 	}

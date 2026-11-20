@@ -51,6 +51,15 @@ func (a *Adapter) CredentialEnv() []string {
 	return []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"}
 }
 
+// sandboxNetworkKey and allowedDomainsKey name the sandbox's network
+// allow list in the settings file: {"sandbox": {"network": {"allowedDomains":
+// [...]}}}. Unconfirmed against the CLI until probe P1 (remote-job-fixes
+// spec §8); change them here and nowhere else.
+const (
+	sandboxNetworkKey = "network"
+	allowedDomainsKey = "allowedDomains"
+)
+
 // settings is the per-job --settings file.
 type settings struct {
 	Permissions struct {
@@ -65,6 +74,9 @@ type settings struct {
 		Filesystem               struct {
 			DenyRead  []string `json:"denyRead"`
 			AllowRead []string `json:"allowRead"`
+			// DenyWrite is written only when the task has entries, so a
+			// job without any gets the same file as before.
+			DenyWrite []string `json:"denyWrite,omitempty"`
 		} `json:"filesystem"`
 	} `json:"sandbox"`
 }
@@ -101,6 +113,13 @@ func abs(p string) string { return "/" + filepath.Clean(p) }
 //   - t.ReadOnly paths are readable like the agent's own dirs (Read allow and
 //     the allowRead re-allow) but never editable. A reviewer's cwd is its lens
 //     dir, so this is how it reads the job's BRIEF.md and fix-notes (Phase 2).
+//     On a worker it is also the job's clone .git and report evidence;
+//   - the implementer's sandboxed shell may reach t.AllowedDomains, and
+//     nothing else; with none, the file has no network block at all;
+//   - t.DenyWrite paths are read-only to the sandboxed shell, for both
+//     roles (spec §4.1.11: on a worker, its own state files and $HOME). An
+//     entry equal to or containing the cwd, a worktree or a ReadOnly path is
+//     refused: bwrap does not start with a denied cwd ancestor (P1b D/D2).
 //
 // The reviewer gets the same file without any Edit allow.
 func Settings(t aa.Task) ([]byte, error) {
@@ -108,9 +127,14 @@ func Settings(t aa.Task) ([]byte, error) {
 	// readable is everything the agent may read: its own dirs plus the
 	// read-only paths (never given an Edit allow).
 	readable := append(append([]string(nil), dirs...), t.ReadOnly...)
-	for _, p := range append(append([]string(nil), readable...), t.DenyRead...) {
+	for _, p := range append(append(append([]string(nil), readable...), t.DenyRead...), t.DenyWrite...) {
 		if !filepath.IsAbs(p) {
 			return nil, fmt.Errorf("claude: %q is not an absolute path", p)
+		}
+	}
+	for _, p := range t.DenyWrite {
+		if containsAny(p, readable) {
+			return nil, fmt.Errorf("claude: deny-write %q is or contains the agent's own or read-only path", p)
 		}
 	}
 	var s settings
@@ -147,11 +171,32 @@ func Settings(t aa.Task) ([]byte, error) {
 			s.Sandbox.Filesystem.AllowRead = append(s.Sandbox.Filesystem.AllowRead, abs(p))
 		}
 	}
+	for _, p := range t.DenyWrite {
+		s.Sandbox.Filesystem.DenyWrite = append(s.Sandbox.Filesystem.DenyWrite, abs(p))
+	}
 	s.Sandbox.Enabled = true
 	s.Sandbox.AutoAllowBashIfSandboxed = true
 	s.Sandbox.AllowUnsandboxedCommands = false
 	s.Sandbox.FailIfUnavailable = true
-	return json.MarshalIndent(s, "", "  ")
+	if t.Role != aa.Implementer || len(t.AllowedDomains) == 0 {
+		return json.MarshalIndent(s, "", "  ")
+	}
+	return withAllowedDomains(s, t.AllowedDomains)
+}
+
+// withAllowedDomains marshals s with the sandbox network allow list added
+// under the keys probe P1 confirms.
+func withAllowedDomains(s settings, domains []string) ([]byte, error) {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	m["sandbox"][sandboxNetworkKey] = map[string][]string{allowedDomainsKey: append([]string(nil), domains...)}
+	return json.MarshalIndent(m, "", "  ")
 }
 
 // containsAny reports whether dir is one of dirs or an ancestor of one.
@@ -236,7 +281,8 @@ func (a *Adapter) Command(t aa.Task) (aa.Command, error) {
 // plugins and MCP config cannot leak in. Subscription mode: the owner's
 // logged-in config dir, and no API key that would override the login.
 func childEnv(t aa.Task) ([]string, error) {
-	env := dropNames(t.Env, "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CONFIG_DIR")
+	env := dropNames(t.Env, "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CONFIG_DIR",
+		"npm_config_cache", "NPM_CONFIG_CACHE", "XDG_CACHE_HOME")
 	switch t.Credential.Mode {
 	case aa.APIKey:
 		if t.Credential.Key == "" {
@@ -261,6 +307,11 @@ func childEnv(t aa.Task) ([]string, error) {
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 		"CI=1",
 		"SKILL_FORGE_AGENT_ROLE=worker",
+		// Tool caches live in the agent's own cwd, off $HOME, which a
+		// worker denies writes to (spec §4.1.11). The handoff is outside
+		// every worktree, so a cache never shows up in a diff.
+		"npm_config_cache="+filepath.Join(t.Handoff, ".cache", "npm"),
+		"XDG_CACHE_HOME="+filepath.Join(t.Handoff, ".cache"),
 	)
 	return env, nil
 }

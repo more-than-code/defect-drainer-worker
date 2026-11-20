@@ -14,7 +14,7 @@ import (
 // JSON-safe type fails here first.
 
 func fullVerification() *VerificationRun {
-	return &VerificationRun{Ran: true, Ok: true, StartedAt: "2026-11-15T00:00:00.000Z", FinishedAt: "2026-11-15T00:01:00.000Z", Results: []VerifyResult{{
+	return &VerificationRun{Ran: true, Ok: true, StartedAt: "2026-11-15T00:00:00.000Z", FinishedAt: "2026-11-15T00:01:00.000Z", SkippedReason: "host policy", Results: []VerifyResult{{
 		Repo: "web", Command: "make test", Cwd: "/w/web", ExitCode: IntPtr(1), Signal: strPtr("SIGKILL"),
 		Ok: true, DurationMs: 42, OutputTail: "tail", SkippedReason: "skip",
 	}}}
@@ -33,7 +33,7 @@ func fullHygiene() *DiffHygieneReport {
 }
 
 func fullAgentRun() *AgentRun {
-	return &AgentRun{Iterations: 2, CompletedByArtifacts: true, StoppedBy: StoppedByArtifacts, StopReasons: []string{"end_turn"},
+	return &AgentRun{Iterations: 2, CompletedByArtifacts: true, StoppedBy: StoppedByArtifacts, StopReason: "npm registry unreachable", StopReasons: []string{"end_turn"},
 		Turns: 9, TotalCostUSD: 1.5, SessionID: "s1", Missing: []string{"NOTES.md"}, Resumes: 1, Runner: "claude", Tokens: 7}
 }
 
@@ -48,7 +48,8 @@ func fullSpec() JobSpec {
 		CreatedAt: "2026-11-15T00:00:00Z", RunStartedAt: "2026-11-15T01:00:00Z",
 		App: AppSettings{Sandbox: "strict", Toolchain: "flutter", SimulatorWrites: true, MaxTurns: 80,
 			VerifyCommands: []VerifyCommand{{Repo: "web", Command: "make test"}},
-			RepoEntries:    []RepoEntry{{Name: "web", URL: "/p/web", BaseSource: "local", BaseBranch: "main"}}},
+			RepoEntries:    []RepoEntry{{Name: "web", URL: "/p/web", BaseSource: "local", BaseBranch: "main"}},
+			VerifySkipped:  VerifySkippedHostPolicy, VerifySkippedCommands: 2},
 		Fix: &FixSpec{
 			Batch: Batch{ID: "BATCH-1", AppID: "app_0123456789abcdef", Title: "t", Goal: "g", Status: "in_progress", DefectIDs: []string{"DEF-1"}, Mode: "grok", Created: "c", UpdatedAt: "u", Path: "sqlite:batches/BATCH-1"},
 			Defects: []Defect{{ID: "DEF-1", AppID: "app", Title: "t", Severity: "P1", Status: "open", Area: "a", Client: "c", Surface: "s",
@@ -64,7 +65,7 @@ func fullSpec() JobSpec {
 			Steps: []RunStep{{Key: "login", Position: 1, Section: "s", Action: "a", Expected: "e", Exploratory: true, Status: "pass", Actual: "x", Evidence: []string{"e"}, DefectID: &defID, DefectStatus: &defStatus, Review: "r", ReviewNote: "n", UpdatedAt: "u"}},
 		}},
 		StripEnv: []string{"QA_PASSWORD"},
-		Caps:     Caps{AgentMaxIters: 8, AgentMaxWallSec: 2700, ReviewOff: true, ReviewMaxTurns: 8, ReviewMaxWallSec: 900, AgentMaxTurnsArg: "120", GrokBypassPermissions: true, GrokTools: "bash"},
+		Caps:     Caps{AgentMaxIters: 8, AgentMaxWallSec: 2700, ReviewOff: true, ReviewMaxTurns: 8, ReviewMaxWallSec: 900, AgentMaxTurnsArg: "120", GrokBypassPermissions: true, GrokTools: "bash", AgentMaxCostUSD: 5},
 		Adapter:  "claude",
 		Model:    "sonnet",
 	}

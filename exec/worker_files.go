@@ -58,10 +58,18 @@ NOTES.md, do not edit extra files.
 5. Answer every acceptance criterion in fix-notes/<DEF>.md.
 
 ## Git
-- Commit in the worktree branch already checked out
-  (defect-drainer/<BATCH-id>). One intent per repo.
-- Do not push. Do not commit on main/master. Do not edit primaries.
-- Do not add BRIEF.md / PROCESS.md / NOTES.md / review/ to product commits.
+- Leave your changes uncommitted in the worktree branch already
+  checked out (defect-drainer/<BATCH-id>). Defect Drainer commits them
+  when the operator ships.
+- Do not commit, push or switch branches. Do not edit primaries.
+- Do not copy BRIEF.md / PROCESS.md / NOTES.md / review/ into a worktree.
+
+## Blocked
+- If something outside your control stops the work (a refused path,
+  no network, a missing tool), write a full line in NOTES.md:
+  BLOCKED: <reason>
+  The loop stops after that iteration. Delete the line once the
+  blocker is gone.
 
 ## Forbidden
 - Inventing test results you did not observe

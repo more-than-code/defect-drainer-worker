@@ -105,6 +105,51 @@ Keep `allow_verify_commands = false`: verify commands are not sandboxed.
 PR). The file must stay root-owned and not group- or world-writable, or the
 worker declines every job. `sudo sh install.sh status` shows how it reads it.
 
+### What a job's agent can reach
+
+- **Sandbox:** every agent except grok runs its CLI's own sandbox, `strict`,
+  whatever the app asks for. The agent writes only its job's handoff and
+  worktrees.
+- **Git:** the agent can read its job's repo clone (`git status`, `diff`,
+  `log` work) but cannot write it, and cannot read any other clone. It leaves
+  its changes uncommitted; the worker commits them when the operator ships.
+  One clone serves every job on the same repo URL, so its `.git` also holds
+  the other jobs' branches on that repo: list a repo on hosts that only take
+  jobs you'd let see each other's work.
+- **Report evidence:** the agent and the reviewers can read this job's
+  report screenshots, and no other job's.
+- **Writes:** the agent writes its job's handoff and worktrees. It cannot
+  write the worker's own files (`/var/lib/dd-worker/status.json` and
+  `readiness/`) or the worker user's home. Directories it cannot read
+  (other jobs, the clones, the credential, `~/.claude`) appear empty to it,
+  and anything it writes there is thrown away with the sandbox; it never
+  reaches the disk. One gap is accepted: the agent can create a *new* file
+  directly in `/var/lib/dd-worker`. The worker never reads files there it
+  doesn't know, and nothing runs from there.
+- **Tool caches:** npm and other XDG caches go to `.cache/` in the job's
+  handoff, not the home directory, and are removed with the job.
+- **Network** (Claude only; other adapters ignore it): none by default. `agent_allowed_domains` lists the exact
+  hosts the agent's sandboxed shell may reach, for example
+  `["registry.npmjs.org"]` for npm installs. Lowercase hostnames only: no
+  wildcards, IP addresses or ports, at most 16. A bad entry makes
+  `dd-worker policy check` fail and the worker decline every job.
+- **Cost** (Claude only: the other adapters report no cost): the server caps
+  each job's agent cost (default $5). The loop
+  stops with `budget` once the job's total, Resumes included, reaches it.
+  `max_cost_usd` (whole dollars, 1 to 100) can lower that cap on this host,
+  never raise it. With no cap from the server, the host's value is used, or $5.
+- **Verify:** with `allow_verify_commands = false`, a job's verify commands
+  are skipped, the job log says so, and no defect resolves from that job.
+
+Every agent run logs `Permission mode forced to default —
+CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set …` on stderr. That is expected: the
+worker sets the scrub on purpose so the agent's shell can't print the API key,
+and the allow and deny rules in the job's settings file apply either way.
+
+The loop also stops when the agent writes a `BLOCKED: <reason>` line in its
+`NOTES.md` (`blocked`), or when two iterations in a row change nothing
+(`no_progress`).
+
 ## Secrets
 
 ```sh
@@ -164,6 +209,11 @@ sudo sh install.sh rollback
 switches to the previous version and restarts. Rolling back to a version older
 than 0.2.0 needs the credential copied back to `/etc/dd-worker/env` by hand
 (0.2.0 moved it to `/var/lib/dd-worker/credential/`).
+
+Versions before 0.2.0-rc2 refuse `agent_allowed_domains` and `max_cost_usd`
+as unknown keys and then decline every job. Before rolling back past rc2,
+remove both keys from `policy.toml`; after an upgrade to rc2, add them only
+once the upgrade has succeeded.
 
 ## Remove
 

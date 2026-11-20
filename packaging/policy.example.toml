@@ -32,3 +32,13 @@ allow_verify_commands = false
 
 # Push the job branch when the operator ships (serve opens the PR).
 allow_ship = true
+
+# Hosts the agent's sandboxed shell may reach (exact lowercase hostnames, at
+# most 16, no wildcards or IP addresses). Unset or empty means no network.
+# Versions before 0.2.0-rc2 refuse this key: remove it before a rollback.
+# agent_allowed_domains = ["registry.npmjs.org"]
+
+# Lower the server's per-job agent cost cap on this host (whole US dollars,
+# 1 to 100). Unset uses the server's cap, or $5 when the server sends none.
+# Versions before 0.2.0-rc2 refuse this key: remove it before a rollback.
+# max_cost_usd = 5

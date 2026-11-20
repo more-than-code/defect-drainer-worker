@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"os"
@@ -72,6 +73,10 @@ type closeError struct {
 	err  error
 }
 
+// Unwrap lets the session-end log reach the server's websocket.CloseError
+// (its reason text).
+func (e closeError) Unwrap() error { return e.err }
+
 func (e closeError) Error() string {
 	if e.err != nil {
 		return e.err.Error()
@@ -84,11 +89,17 @@ func (e closeError) Error() string {
 func (w *Worker) Run(ctx context.Context) error {
 	backoff := conn.NewBackoff()
 	var replaced []time.Time
+	if home, ok := workerHome(); ok && homeHoldsState(home, w.opts.Paths) {
+		w.logf("$HOME %s holds the state dir: agents' writes to it are not denied", home)
+	}
 	go w.readinessLoop(ctx)
 	for {
 		err := w.session(ctx, &backoff)
 		if ctx.Err() != nil {
 			return nil
+		}
+		if err != nil {
+			w.logf("%s", sessionEndReason(err))
 		}
 		var ce closeError
 		errors.As(err, &ce)
@@ -119,18 +130,69 @@ func (w *Worker) Run(ctx context.Context) error {
 				return nil
 			}
 		default:
-			if err != nil {
-				w.logf("session ended: %v", conn.Safe(err))
-			}
 			d := backoff.Take()
 			if d > w.t.BackoffMax {
 				d = w.t.BackoffMax
 			}
+			w.logf("reconnecting in %s", d.Round(time.Millisecond))
 			if !sleepCtx(ctx, d) {
 				return nil
 			}
 		}
 	}
+}
+
+// dialError marks a session that never connected.
+type dialError struct{ err error }
+
+func (e dialError) Error() string { return e.err.Error() }
+func (e dialError) Unwrap() error { return e.err }
+
+// sessionEndReason is the log line for a session's end (F9): the close code
+// and its name with the server's reason, a connection that never opened, or
+// the read/write error. Error text goes through conn.Safe, and logf redacts
+// and strips control characters.
+func sessionEndReason(err error) string {
+	var de dialError
+	if errors.As(err, &de) {
+		return "connect failed: " + conn.Safe(de.err)
+	}
+	if errors.Is(err, errUnauthenticated) {
+		return "connect refused: unauthenticated"
+	}
+	code := websocket.CloseStatus(err)
+	var ce closeError
+	if errors.As(err, &ce) {
+		code = ce.code
+	}
+	if code != -1 {
+		line := fmt.Sprintf("socket closed: code %d (%s)", int(code), closeCodeName(code))
+		var wce websocket.CloseError
+		if errors.As(err, &wce) && wce.Reason != "" {
+			r := []rune(conn.Safe(errors.New(wce.Reason)))
+			if len(r) > 120 {
+				r = r[:120]
+			}
+			line += ": " + string(r)
+		}
+		return line
+	}
+	return "socket error: " + conn.Safe(err)
+}
+
+// closeCodeName names the protocol's own close codes and the standard ones.
+func closeCodeName(c websocket.StatusCode) string {
+	switch c {
+	case workerproto.CloseRevoked:
+		return "revoked"
+	case workerproto.CloseProtocolUnsupported:
+		return "protocol unsupported"
+	case workerproto.CloseOrgMismatch:
+		return "org mismatch"
+	case workerproto.CloseReplaced:
+		return "replaced"
+	}
+	return c.String()
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {
@@ -208,7 +270,10 @@ func (w *Worker) setConfig(c config.Config) {
 func (w *Worker) session(ctx context.Context, backoff *conn.Backoff) error {
 	c, err := w.dial(ctx)
 	if err != nil {
-		return err
+		if errors.Is(err, errUnauthenticated) {
+			return err
+		}
+		return dialError{err}
 	}
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -454,7 +519,7 @@ func (w *Worker) pingLoop(ctx context.Context, s *socket, every time.Duration) {
 		case <-t.C:
 		}
 		if silent := time.Since(time.Unix(0, s.lastRx.Load())); silent > 3*every {
-			w.logf("no frame from the server for %s: reconnecting", silent.Round(time.Second))
+			w.logf("socket closed: heartbeat timeout (no frame from the server for %s)", silent.Round(time.Second))
 			s.c.CloseNow()
 			return
 		}
