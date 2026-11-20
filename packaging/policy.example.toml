@@ -55,3 +55,11 @@ allow_ship = true
 # worker finds (absolute paths, at most 32).
 # Versions before 0.2.0-rc3 refuse this key: remove it before a rollback.
 # agent_deny_sockets = ["/run/example"]
+
+# Models a job may run on: aliases ("sonnet", "opus", "haiku") or full ids,
+# matched exactly, case-sensitive (an alias does not cover a full id), at most 16. A job for
+# another model is declined model_not_allowed and waits for another worker.
+# A Claude job that names no model (the CLI's default) is declined too.
+# Unset means any model.
+# Versions before 0.2.0-rc4 refuse this key: remove it before a rollback.
+# allowed_models = ["sonnet", "haiku"]

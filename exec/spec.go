@@ -74,8 +74,12 @@ type JobSpec struct {
 
 	// Adapter and Model are the app's agent setting (worker spec Q4). Empty
 	// Adapter means "the host's first ready adapter". Resume and Rerun carry
-	// the adapter that started the job. The local transport ignores both and
-	// uses the host's DEFECT_DRAINER_AGENT_RUNNER (worker protocol v1 §8.6).
+	// the adapter that started the job. The local transport ignores Adapter
+	// and uses the host's DEFECT_DRAINER_AGENT_RUNNER (worker protocol v1
+	// §8.6). Model reaches every agent Task of the job, implementer and
+	// reviewers, on both transports; empty keeps the CLI's default. Claude
+	// passes it as --model; antigravity takes its model from the worker's
+	// per-job adapter instead, and grok ignores it.
 	Adapter string `json:"adapter,omitempty"`
 	Model   string `json:"model,omitempty"`
 }

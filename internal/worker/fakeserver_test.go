@@ -300,7 +300,8 @@ func (fs *fakeServer) handle(ctx context.Context, c *websocket.Conn, typ string,
 		}
 		switch f.Reason {
 		case workerproto.DeclineBusy, workerproto.DeclineAdapterUnavailable, workerproto.DeclinePolicyDenied,
-			workerproto.DeclineSecretMissing, workerproto.DeclineBadSpec, workerproto.DeclineInternal:
+			workerproto.DeclineSecretMissing, workerproto.DeclineBadSpec, workerproto.DeclineInternal,
+			workerproto.DeclineModelNotAllowed:
 		default:
 			fs.t.Errorf("decline reason %q not in §5.2", f.Reason)
 		}

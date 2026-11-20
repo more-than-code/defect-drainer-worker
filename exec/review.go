@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/more-than-code/defect-drainer-worker/agentadapter"
 	"github.com/more-than-code/defect-drainer-worker/agentadapter/grok"
 	"github.com/more-than-code/defect-drainer-worker/git"
 )
@@ -59,6 +60,9 @@ type ReviewLens struct {
 	CostUSD   float64         `json:"costUsd,omitempty"`
 	SessionID string          `json:"sessionId,omitempty"`
 	Findings  []ReviewFinding `json:"findings"`
+	// CostByModel splits CostUSD by model ("unknown" when none was
+	// reported). Additive.
+	CostByModel map[string]agentadapter.ModelCost `json:"costByModel,omitempty"`
 }
 
 // ReviewRun is job.review. Required is false when the pass was skipped;
@@ -70,6 +74,8 @@ type ReviewRun struct {
 	Error         string       `json:"error,omitempty"`
 	Lenses        []ReviewLens `json:"lenses,omitempty"`
 	TotalCostUSD  float64      `json:"totalCostUsd,omitempty"`
+	// CostByModel is the lenses' CostByModel summed. Additive.
+	CostByModel map[string]agentadapter.ModelCost `json:"costByModel,omitempty"`
 }
 
 var (
@@ -88,10 +94,12 @@ func CloneReview(r *ReviewRun) *ReviewRun {
 		return nil
 	}
 	c := *r
+	c.CostByModel = agentadapter.CopyCosts(r.CostByModel)
 	if r.Lenses != nil {
 		c.Lenses = make([]ReviewLens, len(r.Lenses))
 		for i, l := range r.Lenses {
 			c.Lenses[i] = l
+			c.Lenses[i].CostByModel = agentadapter.CopyCosts(l.CostByModel)
 			if l.Findings != nil {
 				c.Lenses[i].Findings = append([]ReviewFinding(nil), l.Findings...)
 			}
@@ -478,9 +486,11 @@ func badLocation(s string) bool {
 func (rev *ReviewRun) Finish() {
 	rev.OK = len(rev.Lenses) > 0
 	rev.TotalCostUSD = 0
+	rev.CostByModel = nil
 	var errs []string
 	for _, l := range rev.Lenses {
 		rev.TotalCostUSD += l.CostUSD
+		rev.CostByModel = agentadapter.AddCost(rev.CostByModel, l.CostByModel, l.CostUSD)
 		if !l.OK {
 			rev.OK = false
 		}

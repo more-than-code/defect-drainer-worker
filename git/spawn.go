@@ -329,6 +329,9 @@ type CodingAgentOpts struct {
 	StripEnv []string
 	// Adapter is the coding-agent CLI. Nil is grok (DefaultAdapter).
 	Adapter agentadapter.Adapter
+	// Model is the job's model, passed to the adapter's Task ("" keeps the
+	// CLI's default).
+	Model string
 	// Credential, StateDir, Timeout and DenyRead are passed to the adapter's
 	// Task.
 	Credential agentadapter.Credential
@@ -780,6 +783,9 @@ func StartCodingAgent(handoffAbs, batchID, defectsRoot string, worktrees []Workt
 	// turn — so this is per app, not per install. The override has always
 	// reached grok verbatim.
 	task := agentadapter.Task{Role: agentadapter.Implementer, Handoff: handoffAbs, Sandbox: sandbox}
+	if opts != nil {
+		task.Model = opts.Model
+	}
 	if opts != nil && opts.MaxTurns > 0 {
 		task.MaxTurns = opts.MaxTurns
 	} else if opts != nil && opts.MaxTurnsArg != "" {
@@ -970,6 +976,8 @@ type ReviewAgentOpts struct {
 	OnStderr func(string)
 	// Adapter is the coding-agent CLI. Nil is grok (DefaultAdapter).
 	Adapter agentadapter.Adapter
+	// Model is the job's model: reviewers run on it too.
+	Model string
 	// Worktrees are the job's worktree paths (read-only for the reviewer).
 	Worktrees []string
 	// ReadOnly are extra paths the reviewer may read (the job's notes).
@@ -1031,6 +1039,7 @@ func StartReviewAgent(opts ReviewAgentOpts) (ReviewResult, error) {
 		Worktrees:  opts.Worktrees,
 		ReadOnly:   opts.ReadOnly,
 		Prompt:     prompt,
+		Model:      opts.Model,
 		MaxTurns:   maxTurns,
 		Sandbox:    "read-only",
 		Credential: opts.Credential,

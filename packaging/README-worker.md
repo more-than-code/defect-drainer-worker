@@ -117,6 +117,17 @@ worker declines every job. `sudo sh install.sh status` shows how it reads it.
   stops with `budget` once the job's total, Resumes included, reaches it.
   `max_cost_usd` (whole dollars, 1 to 100) can lower that cap on this host,
   never raise it. With no cap from the server, the host's value is used, or $5.
+  The job also records its cost by model (`agentRun.costByModel`,
+  `review.costByModel`); the cap stays on the total.
+- **Model** (Claude; from 0.2.0-rc4): the server sends each job's model
+  (`sonnet` unless the app sets one) and the worker runs Claude with
+  `--model`; reviewers use the job's model. `allowed_models` limits the
+  models this host runs, for example `["sonnet", "haiku"]`: names match
+  exactly and case-sensitively (an alias does not cover a full `claude-…` id), at most 16. A job
+  for another model, or a Claude job with no model, is declined
+  `model_not_allowed` and waits for another worker. Unset means any model;
+  an empty list or a bad name makes `dd-worker policy check` fail
+  (`bad_allowed_models`).
 - **Verify:** with `allow_verify_commands = false`, a job's verify commands
   are skipped, the job log says so, and no defect resolves from that job.
 
@@ -240,6 +251,8 @@ remove both keys from `policy.toml`; after an upgrade to rc2, add them only
 once the upgrade has succeeded.
 Versions before 0.2.0-rc3 refuse `agent_browser` and `agent_deny_sockets` the
 same way: remove them before rolling back past rc3.
+Versions before 0.2.0-rc4 refuse `allowed_models` the same way: remove it
+before rolling back past rc4.
 
 ## Remove
 

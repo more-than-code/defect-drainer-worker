@@ -55,6 +55,7 @@ var policySchema = policy.Schema{
 	"max_cost_usd":          policy.Int,
 	"agent_browser":         policy.String,
 	"agent_deny_sockets":    policy.Strings,
+	"allowed_models":        policy.Strings,
 }
 
 // Policy is /etc/dd-worker/policy.toml as the worker enforces it. When
@@ -85,6 +86,10 @@ type Policy struct {
 	// extra paths that sandbox hides.
 	AgentBrowser string
 	DenySockets  []string
+	// AllowedModels are the models a job may run on, matched exactly (an
+	// alias does not cover a full id). Nil: any model; the file may not
+	// set an empty list.
+	AllowedModels []string
 
 	repoPatterns []repoURL
 }
@@ -122,6 +127,13 @@ func LoadPolicy(path string, skipOwner bool, uid func(os.FileInfo) (uint32, bool
 	p.AllowedDomains = v["agent_allowed_domains"].Strings
 	p.AgentBrowser = v["agent_browser"].String
 	p.DenySockets = v["agent_deny_sockets"].Strings
+	if m, ok := v["allowed_models"]; ok {
+		if len(m.Strings) == 0 { // [] would decline every job
+			p.Reason = "bad_allowed_models"
+			return p
+		}
+		p.AllowedModels = m.Strings
+	}
 	if c, ok := v["max_cost_usd"]; ok {
 		if c.Int < 1 { // 0 would read as unset
 			p.Reason = "bad_max_cost_usd"
@@ -196,6 +208,9 @@ func (p *Policy) check() string {
 	if !validDenySockets(p.DenySockets) {
 		return "bad_agent_deny_sockets"
 	}
+	if !validModels(p.AllowedModels) {
+		return "bad_allowed_models"
+	}
 	p.repoPatterns = nil
 	for _, r := range p.Repos {
 		u, err := canonicalRepo(r, true)
@@ -205,6 +220,22 @@ func (p *Policy) check() string {
 		p.repoPatterns = append(p.repoPatterns, u)
 	}
 	return ""
+}
+
+// validModels checks allowed_models: at most MaxAllowedModels non-empty
+// model names (the offer's model pattern), no duplicates.
+func validModels(models []string) bool {
+	if len(models) > workerproto.MaxAllowedModels {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, m := range models {
+		if m == "" || !workerproto.ValidModel(m) || seen[m] {
+			return false
+		}
+		seen[m] = true
+	}
+	return true
 }
 
 // domainLabel is one lowercase DNS label.
@@ -280,11 +311,13 @@ func (p Policy) Wire() workerproto.Policy {
 		AllowVerifyCommands: p.AllowVerifyCommands, AllowShip: p.AllowShip,
 		AllowedDomains: nonNil(p.AllowedDomains), MaxCostUSD: p.MaxCostUSD,
 		Browser: p.AgentBrowser, MaskedSockets: []string{},
+		AllowedModels: p.AllowedModels,
 	}
 	if !p.Valid {
 		w.Orgs, w.Adapters, w.Repos = []string{}, []string{}, []string{}
 		w.AllowVerifyCommands, w.AllowShip = false, false
 		w.AllowedDomains, w.MaxCostUSD, w.Browser, w.MaskedSockets = []string{}, 0, "", []string{}
+		w.AllowedModels = nil
 	}
 	return w
 }
@@ -317,6 +350,12 @@ func (p Policy) AdapterAllowed(name string) bool {
 		}
 	}
 	return false
+}
+
+// ModelAllowed reports whether a job of adapter may run on model under
+// allowed_models (workerproto.ModelAllowed).
+func (p Policy) ModelAllowed(adapter, model string) bool {
+	return workerproto.ModelAllowed(p.AllowedModels, adapter, model)
 }
 
 // RepoAllowed canonicalises raw and matches it against policy.repos: the

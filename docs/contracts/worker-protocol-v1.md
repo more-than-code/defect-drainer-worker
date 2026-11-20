@@ -151,7 +151,7 @@ Server → worker:
 ```
 
 - **Before answering,** the worker **must** fetch and validate the spec (`GET spec_url`; the token is valid from offer time) and apply its policy (§6.5).
-- It then answers **within 30 s** with `accept {job_id, lease_id}`, or with `decline {job_id, lease_id, reason}`. `reason` is one of `busy`, `adapter_unavailable`, `policy_denied`, `secret_missing`, `bad_spec` or `internal`.
+- It then answers **within 30 s** with `accept {job_id, lease_id}`, or with `decline {job_id, lease_id, reason}`. `reason` is one of `busy`, `adapter_unavailable`, `policy_denied`, `secret_missing`, `bad_spec` or `internal`, plus `model_not_allowed` from worker 0.2.0-rc4 (§8 item 10).
 - Blob downloads, the D1 clone and cutting worktrees happen **after** `accept`.
 - With no answer in 30 s, the offer is withdrawn, and a late `accept` gets `lease_lost`. The worker must not start a job until its `accept` has drawn no `lease_lost` within 5 s, or until the first `ack` for it arrives.
 
@@ -246,7 +246,7 @@ The worker applies its `policy.toml` to **every** `JobSpec`, including each `res
 | repos (`RepoEntry.URL`) | Canonicalise first: scheme `https` or `ssh`/`git@` only; no userinfo; no `ext::`, `file:` or a leading `-`; lowercase host; strip a trailing `.git`. Then the host must match exactly, and the path is compared segment by segment, where `*` matches **one** segment. No match means `decline policy_denied` |
 | `AppSettings.Sandbox` | Effective sandbox = the stricter of the spec's and `policy.min_sandbox` (order: `read-only` > `strict` > `workspace`) |
 | `Caps`, `AppSettings.MaxTurns` | Clamped to `policy.max_turns` and `policy.max_wall_sec` |
-| `adapter`, `model` | `adapter` must be in `policy.adapters` and ready. `model` must match `^[A-Za-z0-9._/-]{0,64}$` and must not start with `-` |
+| `adapter`, `model` | `adapter` must be in `policy.adapters` and ready. `model` must match `^[A-Za-z0-9._/-]{0,64}$` and must not start with `-`. With `policy.allowed_models` (0.2.0-rc4) the model must be listed exactly, else `decline model_not_allowed`; an empty model is declined for `claude` and `antigravity` and allowed for `grok` |
 | `VerifyCommands` | These are **arbitrary shell chosen by org admins**. They run only if `allow_verify_commands`; otherwise the job runs without verify, logs "verify skipped by host policy", and emits `verification {ran:false}` |
 | `ship` control | Only if `allow_ship`; otherwise `control_result {ok:false, code:"policy_denied"}` |
 | `AppSettings.agentHosts` (§15) | Empty: the job's sandbox may reach `policy.agent_allowed_domains`. Otherwise only the hosts in both lists; each dropped host is a job-log line |
@@ -310,6 +310,11 @@ These close the local-only assumptions in W1a's seam. The `local` transport keep
    - `AgentRun.stopReason` (string, optional): the agent's reason for `blocked`, at most 200 characters.
    - `JobSpec.App.sandbox`: for any adapter but grok the worker narrows it to `strict` (and `simulatorWrites` to false) at offer.
 9. **Worker browser (worker 0.2.0-rc3, additive, `browser.v1`, §15):** `JobSpec.App` gains `browser` (bool), `previewCmd`, `previewUrl` (strings) and `agentHosts` (string list), all optional.
+10. **Agent model and cost by model (worker 0.2.0-rc4, additive; old peers ignore every field under §2):**
+    - `JobSpec.model` now reaches Claude as `--model <model>`, for the implementer and every review lens; an empty model passes no flag (the CLI's default). The server resolves the default (`sonnet`); the worker adds none.
+    - Hello and status `policy` gain `allowed_models` (string list, at most 16, each matching the `model` pattern): policy `allowed_models`. Omitted when unset, which means any model. Display only: the worker enforces it (§6.5).
+    - Decline reason `model_not_allowed`: the job's model is not in `allowed_models`. A server before rc4 accepts any non-empty reason.
+    - `AgentRun.costByModel`, `Review.costByModel` and each lens's `costByModel` (object, optional): `{"<model>": {"costUsd": number, "inputTokens": number, "outputTokens": number}}`. From Claude's result `modelUsage`, keyed by `canonicalModel` when present, else the map key; `inputTokens` excludes cache reads and writes. Cost no model was reported for (grok, a prior record from before rc4, a key that isn't a valid model name) is under `"unknown"`, so the values sum to `totalCostUsd`. `AgentRun.costByModel` is cumulative across iterations, Resumes and Reruns, like `totalCostUsd`; `Review.costByModel` sums the lenses. The cost cap stays on the total.
 
 ## 9. Errors and job reasons
 
@@ -334,6 +339,7 @@ These close the local-only assumptions in W1a's seam. The `local` transport keep
 | reason | `secret_missing` | `SecretEnv` absent on the host |
 | reason / decline | `policy_denied` | host policy refuses |
 | reason | `adapter_unavailable` | chosen adapter went not-ready |
+| decline | `model_not_allowed` | the job's model is not in policy `allowed_models` (0.2.0-rc4) |
 | reason | `base_missing` | base branch absent in the worker's clone |
 | reason | `lfs_missing` | the repo uses Git LFS and the host has no `git-lfs` (W3, additive) |
 | reason | `spool_full` | one job exceeded the spool cap |
@@ -342,6 +348,8 @@ These close the local-only assumptions in W1a's seam. The `local` transport keep
 **Policy reasons** (`dd-worker policy check`, the hello `policy` block's reason; additive in 0.2.0-rc2): `bad_agent_allowed_domains` (not exact lowercase hostnames, a wildcard, an IP address, a duplicate, or more than 16) and `bad_max_cost_usd` (not 1 to 100). A worker before 0.2.0-rc2 reports both keys as `unknown_key`.
 
 Additive in 0.2.0-rc3 (§15): `bad_agent_browser` (not an absolute, clean path; or an existing file that isn't a regular executable owned by root, or is group- or world-writable) and `bad_agent_deny_sockets` (a path that isn't absolute and clean, `/`, a duplicate, or more than 32). A worker before 0.2.0-rc3 reports both keys as `unknown_key`.
+
+Additive in 0.2.0-rc4: `bad_allowed_models` (an empty list, an empty or invalid name, a duplicate, or more than 16). A worker before 0.2.0-rc4 reports the key as `unknown_key`.
 
 ## 10. Capabilities
 

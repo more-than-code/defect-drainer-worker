@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -261,6 +262,14 @@ func (a *Adapter) Command(t aa.Task) (aa.Command, error) {
 		"--setting-sources", "user",
 		"--strict-mcp-config",
 	}
+	if t.Model != "" {
+		// The caller validated it; this keeps a flag-like or odd value out
+		// of argv whatever the caller.
+		if !validModel(t.Model) {
+			return aa.Command{}, fmt.Errorf("claude: invalid model %q", t.Model)
+		}
+		args = append(args, "--model", t.Model)
+	}
 	for _, w := range t.Worktrees {
 		args = append(args, "--add-dir", w)
 	}
@@ -488,6 +497,61 @@ type result struct {
 	Denials        []struct {
 		ToolName string `json:"tool_name"`
 	} `json:"permission_denials"`
+	ModelUsage json.RawMessage `json:"modelUsage"`
+}
+
+// modelRe is workerproto.ValidModel's pattern, non-empty.
+var modelRe = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,64}$`)
+
+func validModel(m string) bool { return modelRe.MatchString(m) && !strings.HasPrefix(m, "-") }
+
+// maxModels bounds the costByModel map one result adds; the rest fold into
+// aa.UnknownModel.
+const maxModels = 16
+
+// costByModel reads the result's modelUsage: {"<model>": {inputTokens,
+// outputTokens, costUSD, canonicalModel, …}}. The key is canonicalModel when
+// present, else the map key. A missing or undecodable map gives nil (the
+// total still stands); a key that is not a valid model name, or one past
+// maxModels, is summed under aa.UnknownModel.
+func costByModel(raw json.RawMessage) map[string]aa.ModelCost {
+	if len(raw) == 0 {
+		return nil
+	}
+	var usage map[string]struct {
+		InputTokens    int     `json:"inputTokens"`
+		OutputTokens   int     `json:"outputTokens"`
+		CostUSD        float64 `json:"costUSD"`
+		CanonicalModel string  `json:"canonicalModel"`
+	}
+	if json.Unmarshal(raw, &usage) != nil || len(usage) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(usage))
+	for k := range usage {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // which entries fold into unknown must not vary
+	out := map[string]aa.ModelCost{}
+	for _, k := range keys {
+		u := usage[k]
+		name := k
+		if u.CanonicalModel != "" {
+			name = u.CanonicalModel
+		}
+		if !validModel(name) {
+			name = aa.UnknownModel
+		}
+		if _, seen := out[name]; !seen && len(out) >= maxModels {
+			name = aa.UnknownModel
+		}
+		c := out[name]
+		c.CostUSD += u.CostUSD
+		c.InputTokens += u.InputTokens
+		c.OutputTokens += u.OutputTokens
+		out[name] = c
+	}
+	return out
 }
 
 func decodeResult(raw []byte) []aa.Event {
@@ -501,6 +565,7 @@ func decodeResult(raw []byte) []aa.Event {
 		NumTurns:     r.NumTurns,
 		TotalCostUSD: r.TotalCostUSD,
 		IsError:      r.IsError,
+		CostByModel:  costByModel(r.ModelUsage),
 	}
 	for _, d := range r.Denials {
 		if d.ToolName != "" {

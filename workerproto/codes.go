@@ -88,6 +88,7 @@ const (
 	SpoolMaxBytes        = 200 << 20
 	SpoolEndedJobTTL     = 24 * time.Hour
 	MaxAdapters          = 8
+	MaxAllowedModels     = 16
 	MaxTools             = 8
 	MaxBlobsPerJob       = 200
 	MaxBlobBytesPerJob   = 100 << 20
