@@ -130,6 +130,7 @@ test_main() {
 		cat /tmp/out
 	fi
 	links_to "$V2"
+	check "it says upgraded $V1 -> $V2" out_has "upgraded $V1 -> $V2 (connected)"
 	check "previous is $V1" sh -c "[ \"\$(cat $LIB/previous)\" = '$V1' ]"
 	check "upgrade restarted the service" grep -qx "restart dd-worker" /tmp/systemctl.log
 	check "upgrade reloaded systemd" grep -qx "daemon-reload" /tmp/systemctl.log
@@ -139,6 +140,7 @@ test_main() {
 	echo "# rollback"
 	check "rollback" inst rollback
 	links_to "$V1"
+	check "it says rolled back $V2 -> $V1" out_has "rolled back $V2 -> $V1"
 	check "previous is $V2" sh -c "[ \"\$(cat $LIB/previous)\" = '$V2' ]"
 	check "both versions are kept" test -x "$LIB/$V2/dd-worker"
 
@@ -146,6 +148,7 @@ test_main() {
 	rm -f /tmp/fake-connects
 	if DD_WORKER_CONNECT_TIMEOUT=2 inst upgrade "$V2"; then not_ok "a failed upgrade exits non-zero"; else ok "a failed upgrade exits non-zero"; fi
 	check "it says it rolled back" out_has "rolling back to $V1"
+	check "it says it is back on $V1" out_has "back on $V1"
 	links_to "$V1"
 
 	echo "# an unknown version installs nothing"
