@@ -128,6 +128,16 @@ type BatchFixBriefInput struct {
 	// NoNetwork says the agent's sandbox has no network at all (a
 	// non-grok adapter with no allowed hosts).
 	NoNetwork bool
+	// Browser, when set, adds the Screenshots section and narrows
+	// NO-SCREENSHOT (worker-browser B3, B6). Nil writes rc2's brief.
+	Browser *BrowserBrief
+}
+
+// BrowserBrief is the app's preview as the brief states it; both empty means
+// the app has no preview.
+type BrowserBrief struct {
+	PreviewCmd string
+	PreviewURL string
 }
 
 // BuildBatchFixBrief ports backend/src/batches.ts buildBatchFixBrief.
@@ -325,6 +335,20 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 			"",
 		)
 	}
+	noShot := []string{
+		"   - If the sandbox is **strict** and you cannot screenshot, put a line reading exactly",
+		"     `NO-SCREENSHOT: <DEF-id>` in `NOTES.md`. That releases the run only — the defect",
+		"     still will not resolve without a new image.",
+	}
+	if input.Browser != nil {
+		lines = append(lines, browserBriefSection(*input.Browser)...)
+		noShot = []string{
+			"   - Only if `dd-shot` failed, or this brief says the app has no preview, put a line",
+			"     reading exactly `NO-SCREENSHOT: <DEF-id>` in `NOTES.md`, with the `DD-SHOT FAIL`",
+			"     line quoted under it. That releases the run only — the defect still will not",
+			"     resolve without a new image.",
+		}
+	}
 	lines = append(lines,
 		"## Done",
 		"Completion is measured in **files**, not prose.",
@@ -333,9 +357,9 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 		"2. For each defect you claim fixed:",
 		"   - `fix-notes/<DEF-id>.md` answering every acceptance criterion, and",
 		"   - `fix-evidence/<DEF-id>/fix-01.png`.",
-		"   - If the sandbox is **strict** and you cannot screenshot, put a line reading exactly",
-		"     `NO-SCREENSHOT: <DEF-id>` in `NOTES.md`. That releases the run only — the defect",
-		"     still will not resolve without a new image.",
+	)
+	lines = append(lines, noShot...)
+	lines = append(lines,
 		"3. To decline a defect, put a line reading exactly `UNFIXED: <DEF-id>` in `NOTES.md`.",
 		"   The job may complete; that defect will not resolve.",
 		"4. Only once those files exist, reply `DONE "+input.Batch.ID+"`.",
@@ -363,4 +387,38 @@ func WriteHandoffBrief(handoff string, input BatchFixBriefInput) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(handoff, "BRIEF.md"), []byte(BuildBatchFixBrief(input)), 0o644)
+}
+
+// browserBriefSection is the brief's Screenshots section for a worker
+// browser job (worker-browser B3, B6).
+func browserBriefSection(b BrowserBrief) []string {
+	if b.PreviewCmd == "" || b.PreviewURL == "" {
+		return []string{
+			"## Screenshots",
+			"This host has a headless browser, but the app has **no preview**: no preview command",
+			"and URL are set, so `dd-shot` cannot serve it. Put `NO-SCREENSHOT: <DEF-id>` in",
+			"`NOTES.md` for each defect you fix, and say in its fix notes how you verified it.",
+			"",
+		}
+	}
+	return []string{
+		"## Screenshots",
+		"This host has a headless browser. Take each after-fix screenshot with `dd-shot`, from",
+		"this directory, in **one** Bash call:",
+		"",
+		"```sh",
+		"sh dd-shot <DEF-id> <path> [<path>...]",
+		"```",
+		"",
+		"- It runs the app's preview (`" + briefSafe(b.PreviewCmd, 200) + "`) in the first worktree, waits up",
+		"  to 90 s for " + briefSafe(b.PreviewURL, 100) + ", screenshots each path (for example `/` or",
+		"  `/settings`) into `fix-evidence/<DEF-id>/fix-NN.png`, then stops the preview.",
+		"- It prints one `DD-SHOT OK` or `DD-SHOT FAIL` line per step; the preview's output is in",
+		"  `.dd-shot/server.log`.",
+		"- A server you start yourself does not survive into your next Bash call, so don't serve",
+		"  the app in one call and screenshot it in another.",
+		"- The preview runs with no app secrets. If a page needs its backend, screenshot what",
+		"  renders and say so in the fix notes.",
+		"",
+	}
 }

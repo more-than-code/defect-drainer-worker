@@ -1,0 +1,50 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Read(//srv/dd/jobs/j1/handoff/**)",
+      "Read(//srv/dd/jobs/j1/handoff/worktrees/web/**)",
+      "Read(//srv/dd/repos/clone-a/.git)",
+      "Read(//srv/dd/repos/clone-a/.git/**)",
+      "Read(//srv/dd/jobs/j1/evidence)",
+      "Read(//srv/dd/jobs/j1/evidence/**)",
+      "Edit(//srv/dd/jobs/j1/handoff/**)",
+      "Edit(//srv/dd/jobs/j1/handoff/worktrees/web/**)"
+    ],
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Edit(//srv/dd/jobs/j1/handoff/.claude/**)",
+      "Edit(//srv/dd/jobs/j1/handoff/worktrees/web/.claude/**)",
+      "Read(//etc/dd-worker)",
+      "Read(//etc/dd-worker/**)",
+      "Read(//home/dd/.claude)",
+      "Read(//home/dd/.claude/**)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": false,
+    "failIfUnavailable": true,
+    "filesystem": {
+      "denyRead": [
+        "//etc/dd-worker",
+        "//srv/dd/repos",
+        "//srv/dd/jobs",
+        "//home/dd/.claude"
+      ],
+      "allowRead": [
+        "//srv/dd/jobs/j1/handoff",
+        "//srv/dd/jobs/j1/handoff/worktrees/web",
+        "//srv/dd/repos/clone-a/.git",
+        "//srv/dd/jobs/j1/evidence"
+      ],
+      "denyWrite": [
+        "//srv/dd/status.json",
+        "//srv/dd/readiness",
+        "//home/dd"
+      ]
+    }
+  }
+}

@@ -537,3 +537,61 @@ func TestCacheEnvUnderCwd(t *testing.T) {
 		}
 	}
 }
+
+// Worker browser (B1, B2): UnixSockets adds allowAllUnixSockets to the
+// implementer's network block, writes allowedDomains even when empty, and
+// changes nothing else; the reviewer never gets it.
+func TestUnixSocketsSettings(t *testing.T) {
+	tk := goldenTask()
+	before, err := Settings(tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk.UnixSockets = true
+	tk.DenyRead = append(tk.DenyRead, "/run/example", "/run/example.sock")
+	body, err := Settings(tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Sandbox struct {
+			Filesystem struct {
+				DenyRead []string `json:"denyRead"`
+			} `json:"filesystem"`
+			Network map[string]json.RawMessage `json:"network"`
+		} `json:"sandbox"`
+		Permissions struct {
+			Deny []string `json:"deny"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	if string(m.Sandbox.Network[allowAllUnixSocketsKey]) != "true" || string(m.Sandbox.Network[allowedDomainsKey]) != "[]" {
+		t.Fatalf("network %s", body)
+	}
+	for _, p := range []string{"//run/example", "//run/example.sock"} {
+		if !slices.Contains(m.Sandbox.Filesystem.DenyRead, p) || !slices.Contains(m.Permissions.Deny, "Read("+p+")") {
+			t.Fatalf("%s not masked:\n%s", p, body)
+		}
+	}
+	tk.AllowedDomains = []string{"registry.npmjs.org"}
+	if body, _ := Settings(tk); !strings.Contains(string(body), `"allowedDomains": [
+        "registry.npmjs.org"
+      ]`) || !strings.Contains(string(body), `"allowAllUnixSockets": true`) {
+		t.Fatalf("domains with sockets:\n%s", body)
+	}
+	// Without the masks the rest of the file is the same as before.
+	tk.AllowedDomains, tk.DenyRead = nil, goldenTask().DenyRead
+	var a, b settings
+	body, _ = Settings(tk)
+	_ = json.Unmarshal(before, &a)
+	_ = json.Unmarshal(body, &b)
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("UnixSockets changed other settings:\n%s\n%s", before, body)
+	}
+	tk.Role = aa.Reviewer
+	if body, _ := Settings(tk); strings.Contains(string(body), sandboxNetworkKey) {
+		t.Fatalf("reviewer got network: %s", body)
+	}
+}

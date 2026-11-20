@@ -128,11 +128,15 @@ worker declines every job. `sudo sh install.sh status` shows how it reads it.
   doesn't know, and nothing runs from there.
 - **Tool caches:** npm and other XDG caches go to `.cache/` in the job's
   handoff, not the home directory, and are removed with the job.
+- **Browser** (Claude fix jobs only): off unless `agent_browser` is set; see
+  [After-fix screenshots](#after-fix-screenshots).
 - **Network** (Claude only; other adapters ignore it): none by default. `agent_allowed_domains` lists the exact
   hosts the agent's sandboxed shell may reach, for example
   `["registry.npmjs.org"]` for npm installs. Lowercase hostnames only: no
   wildcards, IP addresses or ports, at most 16. A bad entry makes
   `dd-worker policy check` fail and the worker decline every job.
+  An app can ask for fewer of these hosts (from 0.2.0-rc3): its jobs then
+  reach only the hosts in both lists, and the job log names each one dropped.
 - **Cost** (Claude only: the other adapters report no cost): the server caps
   each job's agent cost (default $5). The loop
   stops with `budget` once the job's total, Resumes included, reaches it.
@@ -140,6 +144,53 @@ worker declines every job. `sudo sh install.sh status` shows how it reads it.
   never raise it. With no cap from the server, the host's value is used, or $5.
 - **Verify:** with `allow_verify_commands = false`, a job's verify commands
   are skipped, the job log says so, and no defect resolves from that job.
+
+### After-fix screenshots
+
+A fix job for a UI defect resolves only with an after-fix screenshot. A host
+can take one with a headless browser. It's off by default.
+
+1. Install a browser as root, for example Debian's Chromium:
+
+   ```sh
+   sudo apt-get install chromium
+   ```
+
+2. Set `agent_browser` in `policy.toml` to its absolute path, for example
+   `agent_browser = "/usr/bin/chromium"`. The file must be owned by root and
+   not group- or world-writable, or `dd-worker policy check` fails
+   (`bad_agent_browser`) and the worker declines every job.
+3. Restart the worker. The console's Settings → Workers shows the browser as
+   ready, with its version and the hidden sockets; on the host,
+   `sudo cat /var/lib/dd-worker/status.json` shows the same under `tools`
+   and `policy.masked_sockets`.
+
+What it changes, for jobs the server sends with screenshots on:
+
+- The agent's sandbox may use unix sockets: the browser needs them, and so
+  do some test runners. Every other rule above stays.
+- To keep the agent off the host's own services, the worker looks for unix
+  sockets under `/run`, `/var/run`, `/tmp` and `/dev/shm` that its user could
+  connect to and doesn't own, and hides them from the agent: the socket's
+  directory, or the socket itself when it sits directly in `/run` or `/tmp`.
+  It looks at start, every 5 minutes, and again when a browser job starts,
+  without connecting to anything. A directory the worker can enter but not
+  list is hidden whole. The list shows in the console and in `status.json`.
+  `agent_deny_sockets = ["/run/example"]` (absolute paths, at most 32) hides
+  more. If the scan can't finish (more than 20,000 entries in one root, or
+  over 3 seconds), the browser reports `scan_incomplete` and the host takes
+  no browser jobs.
+- The worker writes a `dd-shot` helper into the job. The agent runs the
+  app's preview command (an app setting) in its worktree, screenshots pages
+  with the browser into the job's evidence, and stops the preview, all in
+  one sandboxed command. The preview gets no app secrets.
+- A request this host doesn't allow is dropped and noted in the job log; the
+  job runs without it.
+
+Only Linux hosts take browser jobs. Move the control plane to a release that
+knows browser workers (0.2.0-rc3 or later) **before** setting
+`agent_browser` on any host: an older server refuses the browser's readiness
+entry and keeps closing the worker's connection.
 
 Every agent run logs `Permission mode forced to default —
 CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set …` on stderr. That is expected: the
@@ -214,6 +265,8 @@ Versions before 0.2.0-rc2 refuse `agent_allowed_domains` and `max_cost_usd`
 as unknown keys and then decline every job. Before rolling back past rc2,
 remove both keys from `policy.toml`; after an upgrade to rc2, add them only
 once the upgrade has succeeded.
+Versions before 0.2.0-rc3 refuse `agent_browser` and `agent_deny_sockets` the
+same way: remove them before rolling back past rc3.
 
 ## Remove
 

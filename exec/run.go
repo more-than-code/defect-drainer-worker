@@ -172,7 +172,24 @@ func (r *run) writeHandoff() error {
 		in.Batch = s.Fix.Batch
 		in.Defects = s.Fix.Defects
 	}
+	if r.browserOn() {
+		in.Browser = &BrowserBrief{PreviewCmd: s.App.PreviewCmd, PreviewURL: s.App.PreviewURL}
+		if err := WriteDDShot(s.Handoff, DDShot{
+			Browser: r.host.Browser, Dir: s.Worktrees[0].WorktreeAbs,
+			PreviewCmd: s.App.PreviewCmd, PreviewURL: s.App.PreviewURL,
+		}); err != nil {
+			return err
+		}
+	}
 	return WriteHandoffBrief(s.Handoff, in)
+}
+
+// browserOn is a worker browser job (worker-browser B1–B6): the spec's
+// Browser, left on by the worker's policy, on a host with a browser, for a
+// Claude batch fix with a worktree. Local serve never sets Host.Browser.
+func (r *run) browserOn() bool {
+	return r.spec.App.Browser && r.host.Browser != "" && !r.isTestRun() && len(r.spec.Worktrees) > 0 &&
+		r.host.AgentAdapter().Name() == agentadapter.Claude
 }
 
 func (r *run) prepare() {
@@ -334,6 +351,16 @@ func (r *run) start() (Outcome, error) {
 		for k, v := range provisioned.Env {
 			extra[k] = v
 		}
+		denyRead := r.host.DenyRead()
+		browser := r.browserOn()
+		if browser {
+			// The preview's command and URL, never an app secret (B7).
+			if s.App.PreviewCmd != "" {
+				extra["DD_PREVIEW_CMD"] = s.App.PreviewCmd
+				extra["DD_PREVIEW_URL"] = s.App.PreviewURL
+			}
+			denyRead = append(denyRead, r.host.MaskedSockets...)
+		}
 		opts := &git.CodingAgentOpts{
 			ExtraEnv:       extra,
 			SandboxProfile: sandboxProfile,
@@ -354,7 +381,9 @@ func (r *run) start() (Outcome, error) {
 			Credential: r.host.CredentialFor(s.JobID),
 			StateDir:   r.host.StateDir(s.JobID),
 			Timeout:    agentTimeout,
-			DenyRead:   r.host.DenyRead(),
+			DenyRead:   denyRead,
+			Browser:    browser,
+			NoPreview:  browser && s.App.PreviewCmd == "",
 			// On a worker: the job's clone .git (read-only git) and its
 			// report evidence (spec §4.1 items 2 and 5).
 			ReadOnly:       r.host.ReadOnly,

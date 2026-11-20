@@ -1,0 +1,8 @@
+# Browser test host for packaging/test/sandbox_test.sh: the install test
+# host plus Debian's Chromium and python3 (dd-shot's static test page), as
+# Ops installs it on a worker host (docs/host-setup.md).
+FROM localhost/dd-worker-install-test:bookworm
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      chromium python3 \
+ && rm -rf /var/lib/apt/lists/*

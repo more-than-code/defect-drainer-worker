@@ -57,6 +57,12 @@ type Host struct {
 	// status.json, readiness dir and $HOME, spec §4.1.11). Local serve sets
 	// none.
 	DenyWrite []string
+	// Browser is the worker's headless browser when the job's Browser is
+	// effective (worker-browser B1); "" otherwise and in local serve.
+	// MaskedSockets are the host sockets the implementer's sandbox hides
+	// once it has unix sockets (B2).
+	Browser       string
+	MaskedSockets []string
 }
 
 // AgentAdapter is the host's adapter.

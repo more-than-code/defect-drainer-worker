@@ -109,13 +109,13 @@ func (f Hello) Validate() error {
 }
 
 // ValidateTools checks hello's and status's optional tools (§4.1): at most
-// MaxTools entries, each named git or gh.
+// MaxTools entries, each named git, gh or browser.
 func ValidateTools(tools []ToolStatus) error {
 	if len(tools) > MaxTools {
 		return fmt.Errorf("more than %d tools", MaxTools)
 	}
 	for _, t := range tools {
-		if t.Name != ToolGit && t.Name != ToolGh {
+		if t.Name != ToolGit && t.Name != ToolGh && t.Name != ToolBrowser {
 			return errors.New("invalid tools[].name")
 		}
 	}

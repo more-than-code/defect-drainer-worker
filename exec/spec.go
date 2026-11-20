@@ -94,6 +94,19 @@ type AppSettings struct {
 	// defect (spec D6).
 	VerifySkipped         string `json:"verifySkipped,omitempty"`
 	VerifySkippedCommands int    `json:"verifySkippedCommands,omitempty"`
+
+	// Worker browser (additive, browser.v1). The console's per-app requests;
+	// a worker applies only what its policy also allows and clears Browser
+	// when it does not, so the brief and prompt see the effective value.
+	//   - Browser: after-fix screenshots with the host browser (dd-shot).
+	//   - PreviewCmd: the app's dev server, run in the first worktree.
+	//   - PreviewURL: where it answers, loopback only (http://127.0.0.1:5173).
+	//   - AgentHosts: network hosts requested for the agent's sandbox; empty
+	//     means the host policy's list, as before.
+	Browser    bool     `json:"browser,omitempty"`
+	PreviewCmd string   `json:"previewCmd,omitempty"`
+	PreviewURL string   `json:"previewUrl,omitempty"`
+	AgentHosts []string `json:"agentHosts,omitempty"`
 }
 
 // VerifySkippedHostPolicy is VerifySkipped when a worker's policy has

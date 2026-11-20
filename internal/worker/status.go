@@ -23,21 +23,26 @@ type Snapshot struct {
 	PolicyWhy string                      `json:"policyReason,omitempty"`
 	MaxJobs   int                         `json:"maxJobs"`
 	Busy      []string                    `json:"busyJobIds"`
+	// Tools is the last tools readiness (git, and browser with
+	// agent_browser), as hello and status send it.
+	Tools []workerproto.ToolStatus `json:"tools,omitempty"`
 }
 
 func snapshotPath(p Paths) string { return p.StatusFile() }
 
 // writeSnapshot records the connection state and the latest readiness.
 func (w *Worker) writeSnapshot(connected bool) {
+	pol := w.wirePolicy(w.policyNow())
 	w.mu.Lock()
 	s := Snapshot{
 		Connected: connected, Since: time.Now().UTC().Format(time.RFC3339),
 		Server: w.cfg.ServerURL, WorkerID: w.cfg.WorkerID, OrgID: w.cfg.OrgID, Version: Version,
 		Adapters: append([]workerproto.AdapterStatus(nil), w.statuses...),
-		Policy:   w.policy.Wire(), PolicyWhy: w.policy.Reason, MaxJobs: w.policy.MaxJobs,
+		Policy:   pol, PolicyWhy: w.policy.Reason, MaxJobs: w.policy.MaxJobs,
 	}
 	w.mu.Unlock()
 	s.Busy = w.busyIDs()
+	s.Tools = w.toolsNow()
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return
@@ -54,4 +59,11 @@ func ReadSnapshot(p Paths) (Snapshot, error) {
 	var s Snapshot
 	err = json.Unmarshal(b, &s)
 	return s, err
+}
+
+// policyNow is the current policy.
+func (w *Worker) policyNow() Policy {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.policy
 }

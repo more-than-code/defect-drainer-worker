@@ -119,7 +119,11 @@ func (j *job) launch(d decision, leaseID string) {
 	_ = j.saveMetaLocked()
 	j.mu.Unlock()
 
-	out, err := exec.Start(ctx, d.host.host(w.opts.Paths, j.id, spec.Model, spec.Worktrees, d.domains), spec, runSink{j: j, gen: gen}, exec.Hooks{})
+	eh := d.host.host(w.opts.Paths, j.id, spec.Model, spec.Worktrees, d.domains)
+	// A worker browser job (worker-browser B1, B2): the browser and the
+	// fresh socket masks from the offer's decision.
+	eh.Browser, eh.MaskedSockets = d.browser, d.masked
+	out, err := exec.Start(ctx, eh, spec, runSink{j: j, gen: gen}, exec.Hooks{})
 	if err != nil {
 		j.fail(gen, withCode(err))
 		return

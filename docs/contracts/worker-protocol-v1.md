@@ -74,7 +74,7 @@ Worker → server:
 - `worker_id` equals the credential's worker, else close 1008;
 - `policy.orgs` contains the credential's org, else close 4003;
 - `adapters` has at most 8 entries;
-- `tools`, when present, has at most 8 entries, each named `git` or `gh`, else close 1008 (`bad hello`). A hello without `tools` (a worker older than N5) is accepted;
+- `tools`, when present, has at most 8 entries, each named `git`, `gh` or `browser` (`browser` since 0.2.0-rc3, §15), else close 1008 (`bad hello`). A hello without `tools` (a worker older than N5) is accepted;
 - each `busy_job_ids` entry is a lease held **by this worker** in this org. Others are ignored, and the server sends `lease_lost` for each.
 
 **Field rules:**
@@ -249,6 +249,8 @@ The worker applies its `policy.toml` to **every** `JobSpec`, including each `res
 | `adapter`, `model` | `adapter` must be in `policy.adapters` and ready. `model` must match `^[A-Za-z0-9._/-]{0,64}$` and must not start with `-` |
 | `VerifyCommands` | These are **arbitrary shell chosen by org admins**. They run only if `allow_verify_commands`; otherwise the job runs without verify, logs "verify skipped by host policy", and emits `verification {ran:false}` |
 | `ship` control | Only if `allow_ship`; otherwise `control_result {ok:false, code:"policy_denied"}` |
+| `AppSettings.agentHosts` (§15) | Empty: the job's sandbox may reach `policy.agent_allowed_domains`. Otherwise only the hosts in both lists; each dropped host is a job-log line |
+| `AppSettings.browser` (§15) | Kept only with `policy.agent_browser`, a ready browser, a complete socket scan, adapter `claude` and kind `batch_fix`; otherwise cleared, with a job-log line naming why |
 | invalid or non-root-owned `policy.toml` | `policy.valid:false`; every offer is declined `policy_denied` |
 
 ### 6.6 Secrets on the host (D5)
@@ -307,6 +309,7 @@ These close the local-only assumptions in W1a's seam. The `local` transport keep
    - `AgentRun.stoppedBy` gains `blocked` (a `BLOCKED: <reason>` line in `NOTES.md`), `no_progress` (two iterations in a row changed nothing and left the same artifacts missing) and `budget` (the cost cap was reached). A stop of any of these still verifies, reviews and harvests, like `iterations`. The loop checks, first match wins: `exit`, `artifacts`, `blocked`, `no_progress`, `budget`, `wall`, `iterations`.
    - `AgentRun.stopReason` (string, optional): the agent's reason for `blocked`, at most 200 characters.
    - `JobSpec.App.sandbox`: for any adapter but grok the worker narrows it to `strict` (and `simulatorWrites` to false) at offer.
+9. **Worker browser (worker 0.2.0-rc3, additive, `browser.v1`, §15):** `JobSpec.App` gains `browser` (bool), `previewCmd`, `previewUrl` (strings) and `agentHosts` (string list), all optional.
 
 ## 9. Errors and job reasons
 
@@ -337,6 +340,8 @@ These close the local-only assumptions in W1a's seam. The `local` transport keep
 | reason | `agent_auth` | unchanged |
 
 **Policy reasons** (`dd-worker policy check`, the hello `policy` block's reason; additive in 0.2.0-rc2): `bad_agent_allowed_domains` (not exact lowercase hostnames, a wildcard, an IP address, a duplicate, or more than 16) and `bad_max_cost_usd` (not 1 to 100). A worker before 0.2.0-rc2 reports both keys as `unknown_key`.
+
+Additive in 0.2.0-rc3 (§15): `bad_agent_browser` (not an absolute, clean path; or an existing file that isn't a regular executable owned by root, or is group- or world-writable) and `bad_agent_deny_sockets` (a path that isn't absolute and clean, `/`, a duplicate, or more than 32). A worker before 0.2.0-rc3 reports both keys as `unknown_key`.
 
 ## 10. Capabilities
 
@@ -437,3 +442,46 @@ Idempotency stays as in §6.3. A redelivered `ship` is answered from the stored 
 
 **Readiness.** With `gittoken.v1` the worker's `tools` lists `git` only (reasons `missing`, `too_old`). The server still accepts `gh` entries and the reasons `signed_out`/`no_git_helper` from older workers (display only).
 
+## 15. Worker browser (`browser.v1`, worker 0.2.0-rc3)
+
+Additive (worker-browser spec, decisions B1–B8). A remote fix job for a UI defect can take its own after-fix screenshot on a host whose owner allows it.
+
+**Capability.** Every rc3 worker advertises `browser.v1`: it understands the spec fields below. Whether its browser is ready is the `browser` tool, not the capability. The server sends `browser: true` only to workers that advertise `browser.v1` and report `browser` ready.
+
+**Policy block** (hello, status; always present from rc3):
+
+```json
+"policy":{…, "allowed_domains":["registry.npmjs.org"], "max_cost_usd":5,
+          "browser":"/usr/bin/chromium", "masked_sockets":["/run/example","/run/example.sock"]}
+```
+
+- `allowed_domains`: policy `agent_allowed_domains` (`[]` when unset). `max_cost_usd`: policy `max_cost_usd` (0 when unset). Display only: the worker enforces both.
+- `browser`: policy `agent_browser`, `""` when unset.
+- `masked_sockets`: the last socket scan, at most 128 entries; `[]` without `agent_browser`.
+- An invalid policy sends `[]`, 0, `""` and `[]`.
+
+**Tool.** With `agent_browser` set, `tools` carries `{"name":"browser","version":"154.0.8037","ready":true}`. **Only then:** a server before rc3 refuses the name (`ValidateTools`) and closes the socket after 3 bad frames, so the control plane moves to rc3 before any host sets `agent_browser`. Not-ready reasons:
+- `missing`: the file is absent, or `<browser> --version` fails or prints no version;
+- `unsafe`: no longer a regular executable owned by root and writable only by root;
+- `scan_incomplete`: the socket scan hit a bound, so no browser job runs;
+- `unsupported_os`: not Linux.
+
+**Socket scan** (B2), at start, every 5 minutes and again when a browser job starts:
+- **Roots:** `/run`, `/var/run`, `/tmp`, `/dev/shm`, symlinks resolved, duplicates dropped.
+- **Walk:** never follows a symlink, never connects. It skips directories the worker owns that others can't write, and directories it can't enter.
+- **Counts:** a unix socket the worker doesn't own and may write (connect needs write). Its directory is masked, or the socket itself when it sits directly in a root. A directory the worker may enter but not list is masked whole, and so is one at depth 6 below a root.
+- **Bounds:** more than 20,000 entries in a root, or over 3 s in total, leaves the scan incomplete.
+- **Then:** policy `agent_deny_sockets` is added, entries under a masked ancestor are dropped, and a mask that is or contains the worker's state dir is refused (logged).
+
+**Spec fields** (`JobSpec.App`):
+
+| Field | Rule |
+|---|---|
+| `browser` | See §6.5. When kept: the agent's sandbox gets unix sockets with every masked socket in `denyRead`; the handoff gets `dd-shot`; the brief, prompt and continue prompt get the screenshot rules. When cleared, the job runs as before. |
+| `previewCmd`, `previewUrl` | Both or neither, else `decline bad_spec`. `previewCmd`: at most 512 bytes, one line. `previewUrl`: `http://` with host `127.0.0.1`, `localhost` or `[::1]`, a port, and at most a `/` path. The child gets `DD_PREVIEW_CMD` and `DD_PREVIEW_URL`, never an app secret. Neither empty: the brief says the app has no preview. |
+| `agentHosts` | The `agent_allowed_domains` rules, else `decline bad_spec`. Intersected with the policy (§6.5). |
+
+**`dd-shot`** (in the handoff; POSIX sh): `sh dd-shot <DEF-id> <path> [<path>…]`, at most 8 paths, each starting with `/`.
+- It runs the preview in the first worktree as its own process group, waits up to 90 s for the URL, and screenshots each path with the browser (`--headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage`, a fresh profile in a short temp dir, 60 s each) into `fix-evidence/<DEF-id>/fix-NN.png`, numbered after the files already there. Then it stops the preview.
+- It prints only `DD-SHOT OK <DEF-id> <file> <bytes>B <path>` or `DD-SHOT FAIL <DEF-id> <why>` lines. Exit 0 when every shot was written, 1 otherwise, 2 on bad arguments.
+- **NO-SCREENSHOT** on a browser job is meant for a `dd-shot` failure (its `DD-SHOT FAIL` line quoted in `NOTES.md`) or an app with no preview. The loop releases on the marker as for any strict job, and harvest never resolves without a fresh image.

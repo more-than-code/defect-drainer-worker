@@ -44,7 +44,8 @@ func TestHelloToolsOptional(t *testing.T) {
 }
 
 func TestValidateTools(t *testing.T) {
-	ok := [][]ToolStatus{nil, {}, {{Name: ToolGit}, {Name: ToolGh, Reason: ReasonNoGitHelper}}}
+	ok := [][]ToolStatus{nil, {}, {{Name: ToolGit}, {Name: ToolGh, Reason: ReasonNoGitHelper}},
+		{{Name: ToolGit}, {Name: ToolBrowser, Version: "154.0.8037", Ready: true}}}
 	for _, tools := range ok {
 		if err := ValidateTools(tools); err != nil {
 			t.Errorf("ValidateTools(%+v): %v", tools, err)

@@ -113,6 +113,11 @@ type Task struct {
 	// reach (the worker's agent_allowed_domains). Empty: no network.
 	// Implementer only; adapters without a network rule ignore it.
 	AllowedDomains []string
+	// UnixSockets gives the implementer's sandboxed shell unix sockets, for
+	// the headless browser of a worker browser job (worker-browser B1, B2).
+	// The caller adds every host socket the worker could reach to DenyRead.
+	// Implementer only; adapters without the switch ignore it.
+	UnixSockets bool
 	// Grok-only switches the caller read from its env.
 	GrokBypassPermissions bool
 	GrokTools             string
