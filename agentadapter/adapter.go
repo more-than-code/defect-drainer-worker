@@ -76,6 +76,11 @@ type Task struct {
 	Prompt string
 	// MaxTurns is the per-iteration turn cap. Adapters without one ignore it.
 	MaxTurns int
+	// Model is the job's model (an alias such as "sonnet" or a full id),
+	// already validated by the caller. Empty keeps the CLI's default. Claude
+	// passes it as --model; grok ignores it; antigravity takes its model from
+	// its Config instead.
+	Model string
 	// MaxTurnsArg, when set, is passed to grok's --max-turns verbatim (the
 	// env override has always been passed through unparsed).
 	MaxTurnsArg string
@@ -150,6 +155,55 @@ type End struct {
 	Denials []string `json:"-"`
 	// Tokens is the run's total token count where the CLI reports no cost.
 	Tokens int `json:"-"`
+	// CostByModel is the run's cost split by model, where the CLI reports
+	// one (Claude's modelUsage). Nil when it does not.
+	CostByModel map[string]ModelCost `json:"-"`
+}
+
+// ModelCost is one model's share of a run's cost. The JSON names are the
+// job record's (agentRun.costByModel, review.costByModel).
+type ModelCost struct {
+	CostUSD      float64 `json:"costUsd"`
+	InputTokens  int     `json:"inputTokens"`
+	OutputTokens int     `json:"outputTokens"`
+}
+
+// UnknownModel is the costByModel key for cost no model was reported for.
+const UnknownModel = "unknown"
+
+// AddCost adds into dst (allocating it when nil) and returns it. A run with
+// a cost but no split adds its total under UnknownModel, so the map's sum
+// always equals the total.
+func AddCost(dst map[string]ModelCost, byModel map[string]ModelCost, total float64) map[string]ModelCost {
+	if len(byModel) == 0 {
+		if total == 0 {
+			return dst
+		}
+		byModel = map[string]ModelCost{UnknownModel: {CostUSD: total}}
+	}
+	if dst == nil {
+		dst = make(map[string]ModelCost, len(byModel))
+	}
+	for m, c := range byModel {
+		d := dst[m]
+		d.CostUSD += c.CostUSD
+		d.InputTokens += c.InputTokens
+		d.OutputTokens += c.OutputTokens
+		dst[m] = d
+	}
+	return dst
+}
+
+// CopyCosts returns a copy of m, nil when m is empty.
+func CopyCosts(m map[string]ModelCost) map[string]ModelCost {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]ModelCost, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // EventKind is a decoded stream event.

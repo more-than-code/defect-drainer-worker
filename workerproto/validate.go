@@ -24,6 +24,27 @@ func ValidSHA256(s string) bool { return sha256Re.MatchString(s) }
 // ValidModel reports whether s may be passed to an agent CLI as a model (§6.5).
 func ValidModel(s string) bool { return modelRe.MatchString(s) && !strings.HasPrefix(s, "-") }
 
+// ModelAllowed is the allowed_models rule, shared by the worker (which
+// enforces it) and a scheduler (which can skip a worker that would decline).
+// A nil or empty list allows any model. Otherwise the model must be listed
+// exactly (case-sensitive; an alias such as "sonnet" does not cover a full
+// "claude-…" id). An empty model, the CLI's own default, is refused for the
+// adapters that take a model and allowed for grok, which has none.
+func ModelAllowed(allowed []string, adapter, model string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	if model == "" {
+		return adapter == "grok"
+	}
+	for _, m := range allowed {
+		if m == model {
+			return true
+		}
+	}
+	return false
+}
+
 // ValidRelPath reports whether p is a safe relative path (§2): not empty, not
 // absolute, no backslash or NUL, no "." or ".." segment, and every segment
 // made of [A-Za-z0-9._-].

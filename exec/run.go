@@ -378,6 +378,7 @@ func (r *run) start() (Outcome, error) {
 			},
 			OnMaxTurns: acc.MaxTurnsReached,
 			Adapter:    adapter,
+			Model:      s.Model,
 			Credential: r.host.CredentialFor(s.JobID),
 			StateDir:   r.host.StateDir(s.JobID),
 			Timeout:    agentTimeout,
@@ -877,6 +878,7 @@ func (r *run) reviewLens(fin loopFinish, rev *ReviewRun, lens, brief string, ids
 	adapter := r.host.AgentAdapter()
 	res, err := git.StartReviewAgent(git.ReviewAgentOpts{
 		Adapter:    adapter,
+		Model:      r.spec.Model,
 		Worktrees:  reviewWorktrees(fin.wts),
 		Credential: r.host.CredentialFor(r.spec.JobID),
 		StateDir:   r.host.StateDir(r.spec.JobID),
@@ -927,6 +929,7 @@ func (r *run) reviewLens(fin loopFinish, rev *ReviewRun, lens, brief string, ids
 	}
 	row.Turns = res.End.NumTurns
 	row.CostUSD = res.End.TotalCostUSD
+	row.CostByModel = agentadapter.AddCost(nil, res.End.CostByModel, res.End.TotalCostUSD)
 	row.SessionID = res.End.SessionID
 	// A wall kill is deadline even if stderr also mentions the runtime socket.
 	// The socket phrase is the cause only when the process exited on its own.

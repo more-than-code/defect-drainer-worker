@@ -35,6 +35,10 @@ type AgentRun struct {
 	// Tokens is the cumulative token count from adapters that report no cost
 	// (antigravity).
 	Tokens int `json:"tokens,omitempty"`
+	// CostByModel splits TotalCostUSD by model, cumulative like it. Cost no
+	// model was reported for (grok, an older record) is under "unknown", so
+	// the values sum to TotalCostUSD. Additive.
+	CostByModel map[string]agentadapter.ModelCost `json:"costByModel,omitempty"`
 }
 
 // Reasons the loop stopped. Only StoppedByArtifacts means the worker delivered
@@ -252,6 +256,7 @@ type AgentRunAcc struct {
 	sessionID   string
 	maxTurns    bool
 	tokens      int
+	byModel     map[string]agentadapter.ModelCost
 	// errMsg / errSet: the CLI flagged its own failure this iteration.
 	errMsg string
 	errSet bool
@@ -261,12 +266,14 @@ type AgentRunAcc struct {
 	lastErr string
 }
 
-// EndDetail records what only some adapters report: tokens, the CLI's own
-// error flag and an auth failure. Grok sets none of them.
+// EndDetail records what only some adapters report: tokens, the cost by
+// model, the CLI's own error flag and an auth failure. Grok sets none of them
+// (its cost goes under "unknown"). It runs with End on the same event.
 func (a *AgentRunAcc) EndDetail(e agentadapter.End) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.tokens += e.Tokens
+	a.byModel = agentadapter.AddCost(a.byModel, e.CostByModel, e.TotalCostUSD)
 	if e.IsError {
 		a.errSet = true
 		a.errMsg = e.Message
@@ -323,6 +330,8 @@ func (a *AgentRunAcc) Seed(prior *AgentRun) {
 	a.costUSD = prior.TotalCostUSD
 	a.tokens = prior.Tokens
 	a.sessionID = prior.SessionID
+	// A record from before costByModel keeps its total under "unknown".
+	a.byModel = agentadapter.AddCost(nil, prior.CostByModel, prior.TotalCostUSD)
 }
 
 func (a *AgentRunAcc) End(stopReason, sessionID string, turns int, cost float64) {
@@ -371,6 +380,7 @@ func (a *AgentRunAcc) Snapshot(iter int, stoppedBy string, missing []string) *Ag
 		TotalCostUSD:         a.costUSD,
 		SessionID:            a.sessionID,
 		Tokens:               a.tokens,
+		CostByModel:          agentadapter.CopyCosts(a.byModel),
 	}
 	if len(a.stopReasons) > 0 {
 		run.StopReasons = append([]string(nil), a.stopReasons...)

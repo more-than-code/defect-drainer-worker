@@ -174,3 +174,5 @@ A refused PATCH changes nothing. PATCH stays admin/owner; POST as today.
 ### 7.4 Workers (`GET /api/orgs/{org}/workers`)
 
 `policy` gains `allowed_domains` (string[]), `max_cost_usd` (int, 0 = unset), `browser` (string, the `agent_browser` path, `""` = off) and `masked_sockets` (string[]). These are `[]`/`0`/`""` from a worker before 0.2.0-rc3. `tools[]` may now include `browser`.
+
+From worker 0.2.0-rc4, `policy` may also carry `allowed_models` (string[], additive): the models the worker runs, matched exactly and case-sensitively (`sonnet` does not admit `claude-sonnet-…`). Absent means any model. A worker before 0.2.0-rc4 never sends it.

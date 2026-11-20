@@ -133,6 +133,9 @@ type Policy struct {
 	MaxCostUSD     int      `json:"max_cost_usd"`
 	Browser        string   `json:"browser"`
 	MaskedSockets  []string `json:"masked_sockets"`
+	// Additive in 0.2.0-rc4: policy allowed_models, the models a job may
+	// run on (at most MaxAllowedModels, exact names). Absent: any model.
+	AllowedModels []string `json:"allowed_models,omitempty"`
 }
 
 type Hello struct {
@@ -210,6 +213,9 @@ const (
 	DeclineSecretMissing      = "secret_missing"
 	DeclineBadSpec            = "bad_spec"
 	DeclineInternal           = "internal"
+	// DeclineModelNotAllowed: the job's model is not in the host's policy
+	// allowed_models. Additive in 0.2.0-rc4.
+	DeclineModelNotAllowed = "model_not_allowed"
 )
 
 type Decline struct {

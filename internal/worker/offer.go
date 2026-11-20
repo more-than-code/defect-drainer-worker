@@ -465,6 +465,13 @@ func (w *Worker) applyPolicy(spec exec.JobSpec, offerAdapter, offerModel, starte
 	if h == nil || h.adapter == nil {
 		return declineOf(workerproto.DeclineAdapterUnavailable, chosen+" not implemented")
 	}
+	if !pol.ModelAllowed(chosen, model) {
+		shown := model
+		if shown == "" {
+			shown = "(CLI default)"
+		}
+		return declineOf(workerproto.DeclineModelNotAllowed, "model "+shown+" not allowed (policy)")
+	}
 
 	out := spec
 	out.Adapter, out.Model = chosen, model

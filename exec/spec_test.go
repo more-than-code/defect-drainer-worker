@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/more-than-code/defect-drainer-worker/agentadapter"
 	"github.com/more-than-code/defect-drainer-worker/git"
 )
 
@@ -23,8 +24,9 @@ func fullVerification() *VerificationRun {
 func fullReview() *ReviewRun {
 	return &ReviewRun{OK: true, Required: true, SkippedReason: "s", Error: "e", TotalCostUSD: 0.5, Lenses: []ReviewLens{{
 		Lens: "spec", OK: true, Error: "e", Turns: 3, CostUSD: 0.25, SessionID: "sess",
-		Findings: []ReviewFinding{{Severity: "high", Lens: "spec", DefectID: "DEF-1", Location: "a.go:1", Finding: "f", Reasoning: "r", SuggestedFix: "s"}},
-	}}}
+		Findings:    []ReviewFinding{{Severity: "high", Lens: "spec", DefectID: "DEF-1", Location: "a.go:1", Finding: "f", Reasoning: "r", SuggestedFix: "s"}},
+		CostByModel: map[string]agentadapter.ModelCost{"claude-sonnet-4-5": {CostUSD: 0.25, InputTokens: 10, OutputTokens: 200}},
+	}}, CostByModel: map[string]agentadapter.ModelCost{"claude-sonnet-4-5": {CostUSD: 0.25, InputTokens: 10, OutputTokens: 200}, "unknown": {CostUSD: 0.25}}}
 }
 
 func fullHygiene() *DiffHygieneReport {
@@ -34,7 +36,8 @@ func fullHygiene() *DiffHygieneReport {
 
 func fullAgentRun() *AgentRun {
 	return &AgentRun{Iterations: 2, CompletedByArtifacts: true, StoppedBy: StoppedByArtifacts, StopReason: "npm registry unreachable", StopReasons: []string{"end_turn"},
-		Turns: 9, TotalCostUSD: 1.5, SessionID: "s1", Missing: []string{"NOTES.md"}, Resumes: 1, Runner: "claude", Tokens: 7}
+		Turns: 9, TotalCostUSD: 1.5, SessionID: "s1", Missing: []string{"NOTES.md"}, Resumes: 1, Runner: "claude", Tokens: 7,
+		CostByModel: map[string]agentadapter.ModelCost{"claude-sonnet-4-5": {CostUSD: 1.25, InputTokens: 120, OutputTokens: 4200}, "claude-haiku-4-5": {CostUSD: 0.25, InputTokens: 40, OutputTokens: 900}}}
 }
 
 func fullSpec() JobSpec {
