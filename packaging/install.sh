@@ -107,11 +107,13 @@ service_active() {
 }
 
 # The version /usr/local/bin/dd-worker points at, or empty.
+# POSIX sh has no local variables, so helpers use their own cv_/sc_ names
+# and never overwrite a caller's old, prev or cur.
 current_version() {
-	link=$(readlink "$BIN_LINK" 2>/dev/null) || return 0
-	v=${link#"$LIB"/}
-	v=${v%/dd-worker}
-	[ "$link" = "$LIB/$v/dd-worker" ] && printf '%s\n' "$v"
+	cv_link=$(readlink "$BIN_LINK" 2>/dev/null) || return 0
+	cv_v=${cv_link#"$LIB"/}
+	cv_v=${cv_v%/dd-worker}
+	[ "$cv_link" = "$LIB/$cv_v/dd-worker" ] && printf '%s\n' "$cv_v"
 	return 0
 }
 
@@ -230,24 +232,24 @@ setup_host() {
 # Points /usr/local/bin/dd-worker at $1 (an atomic rename), records the old
 # target as previous, and deletes every other version.
 set_current() {
-	v=$1
-	old=$(current_version)
-	if [ -n "$old" ] && [ "$old" != "$v" ]; then
-		printf '%s\n' "$old" >"$LIB/previous.tmp"
+	sc_v=$1
+	sc_old=$(current_version)
+	if [ -n "$sc_old" ] && [ "$sc_old" != "$sc_v" ]; then
+		printf '%s\n' "$sc_old" >"$LIB/previous.tmp"
 		chmod 0644 "$LIB/previous.tmp"
 		mv -f "$LIB/previous.tmp" "$LIB/previous"
 	fi
 	mkdir -p "$(dirname "$BIN_LINK")"
-	ln -s "$LIB/$v/dd-worker" "$BIN_LINK.tmp.$$"
+	ln -s "$LIB/$sc_v/dd-worker" "$BIN_LINK.tmp.$$"
 	mv -f "$BIN_LINK.tmp.$$" "$BIN_LINK"
-	say "$BIN_LINK -> $LIB/$v/dd-worker"
-	prev=$(previous_version)
-	for d in "$LIB"/*; do
-		[ -d "$d" ] || continue
-		name=${d#"$LIB"/}
-		[ "$name" = "$v" ] || [ "$name" = "$prev" ] && continue
-		rm -rf "$d"
-		say "removed old version $name"
+	say "$BIN_LINK -> $LIB/$sc_v/dd-worker"
+	sc_prev=$(previous_version)
+	for sc_d in "$LIB"/*; do
+		[ -d "$sc_d" ] || continue
+		sc_name=${sc_d#"$LIB"/}
+		[ "$sc_name" = "$sc_v" ] || [ "$sc_name" = "$sc_prev" ] && continue
+		rm -rf "$sc_d"
+		say "removed old version $sc_name"
 	done
 }
 
