@@ -76,6 +76,16 @@ func (p Paths) Worktree(id, repo string) (string, error) {
 	return Under(p.WorktreeRoot(id), repo)
 }
 
+// BaselineRoot holds a verify_submitted job's base worktrees (§16).
+func (p Paths) BaselineRoot(id string) string {
+	return filepath.Join(p.JobDir(id), "baseline-worktrees")
+}
+
+// BaselineWorktree is {state}/jobs/<job_id>/baseline-worktrees/<repo>.
+func (p Paths) BaselineWorktree(id, repo string) (string, error) {
+	return Under(p.BaselineRoot(id), repo)
+}
+
 // RepoClone is {state}/repos/<sha256 of the canonical URL> (D1).
 func (p Paths) RepoClone(canonicalURL string) string {
 	sum := sha256.Sum256([]byte(canonicalURL))

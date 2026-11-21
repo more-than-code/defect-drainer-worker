@@ -37,7 +37,7 @@ Worker = {
 - **Who sees what:** members see the list read-only; admins and owners see the actions. A worker of another org is 404.
 - **Never exposed:** `machine_id_hash`, credential hashes and job tokens.
 - **`tools`** (added 2026-11-17, N5): the git and gh readiness from the worker's last `hello` or `status` ([worker protocol](worker-protocol-v1.md) §4.1); `reason` is one of `missing`, `too_old`, `signed_out`, `no_git_helper` and is left out when empty. **Omitted** when the worker never reported tools (an older `dd-worker`): the console shows "tools unknown". Display only; scheduling ignores it.
-- **`capabilities`** (added 2026-11-17, N6a): the capabilities from the worker's last `hello` ([worker protocol](worker-protocol-v1.md) §10, §14), sorted. **Omitted** until the worker says hello to a server that records them. A list without `gittoken.v1` means the worker gets no offers: the console shows "update dd-worker".
+- **`capabilities`** (added 2026-11-17, N6a): the capabilities from the worker's last `hello` ([worker protocol](worker-protocol-v1.md) §10, §14), sorted. **Omitted** until the worker says hello to a server that records them. A list without `gittoken.v1` means the worker gets no offers: the console shows "update dd-worker". A list without `verify_submitted.v1` (a worker after 0.2.0-rc4) means the worker is never offered a job that verifies a submitted ref ([worker protocol](worker-protocol-v1.md) §16).
 - **Errors:**
   - 403 `forbidden` for a member writing;
   - 404 `not_found`;

@@ -188,7 +188,7 @@ func (r *run) writeHandoff() error {
 // Browser, left on by the worker's policy, on a host with a browser, for a
 // Claude batch fix with a worktree. Local serve never sets Host.Browser.
 func (r *run) browserOn() bool {
-	return r.spec.App.Browser && r.host.Browser != "" && !r.isTestRun() && len(r.spec.Worktrees) > 0 &&
+	return r.spec.App.Browser && r.host.Browser != "" && !r.isTestRun() && !r.spec.VerifySubmitted() && len(r.spec.Worktrees) > 0 &&
 		r.host.AgentAdapter().Name() == agentadapter.Claude
 }
 
@@ -285,7 +285,7 @@ func (r *run) start() (Outcome, error) {
 	verifyCommands := s.App.VerifyCommands
 	var baseline *VerificationRun
 	if !r.isTestRun() {
-		if s.Mode != ModeFresh {
+		if s.Mode != ModeFresh && !s.VerifySubmitted() {
 			baseline = s.Baseline
 			if baseline != nil {
 				spawnLog("baseline: reusing the first run's (measured before any agent edits)", "info")
@@ -293,7 +293,14 @@ func (r *run) start() (Outcome, error) {
 				spawnLog("baseline: none stored — skipped; verify judges without one, so every red command blocks", "warn")
 			}
 		} else if len(verifyCommands) > 0 {
-			vrun := RunVerification(r.ctx, verifyCommands, wts, filepath.Join(handoff, "baseline"), s.App.RepoEntries, provisioned.VerifyEnv, realByRepo, func(line, level string) {
+			// A submitted ref's worktrees already hold the change: its
+			// baseline runs in the worker's base worktrees (§16).
+			baseWts, baseReal := wts, realByRepo
+			if s.VerifySubmitted() {
+				baseWts = s.BaselineWorktrees
+				baseReal = SnapshotWorktreeReals(baseWts)
+			}
+			vrun := RunVerification(r.ctx, verifyCommands, baseWts, filepath.Join(handoff, "baseline"), s.App.RepoEntries, provisioned.VerifyEnv, baseReal, func(line, level string) {
 				spawnLog("baseline "+line, level)
 			}, strip)
 			baseline = &vrun
@@ -305,6 +312,15 @@ func (r *run) start() (Outcome, error) {
 
 	if r.sink.Cancelled() {
 		return Outcome{}, nil
+	}
+
+	if s.VerifySubmitted() {
+		fin := loopFinish{
+			handoff: handoff, wts: wts, diffBase: diffBaseByRepo,
+			verifyEnv: provisioned.VerifyEnv, realByRepo: realByRepo, gitDirByRepo: gitDirByRepo,
+			baseline: baseline,
+		}
+		return r.startVerifySubmitted(fin, spawnLog)
 	}
 
 	adapter := r.host.AgentAdapter()
@@ -602,6 +618,40 @@ func (r *run) start() (Outcome, error) {
 	return Outcome{Launched: true}, nil
 }
 
+// startVerifySubmitted is a verify_submitted run after the baseline (worker
+// protocol v1 §16): no coding agent starts and no prompt is built. The
+// phases an agent run reports still go out, so the job record moves as for
+// a batch fix; then verify, diff hygiene, review and harvest run as usual.
+func (r *run) startVerifySubmitted(fin loopFinish, log func(line, level string)) (Outcome, error) {
+	heads := map[string]string{}
+	lines := []LogLine{guarded(fmt.Sprintf("verifying submitted refs: no coding agent (%d worktree(s))", len(fin.wts)), "info")}
+	for _, w := range fin.wts {
+		heads[w.Repo] = WorktreeHead(w)
+		ref := ""
+		for _, sr := range r.spec.SubmittedRefs {
+			if sr.Repo == w.Repo {
+				ref = sr.Ref
+			}
+		}
+		lines = append(lines, guarded(fmt.Sprintf("worktree %s → %s (submitted %s at %s, merge-base %s)", w.Repo, w.WorktreeAbs, ref, heads[w.Repo], fin.diffBase[w.Repo]), "info"))
+	}
+	if err := r.emit(Event{Kind: EventStatus, Status: &Status{Phase: PhaseRunning, DiffBase: fin.diffBase, SubmittedHeads: heads}, Lines: lines}); err != nil {
+		return stopOn(err)
+	}
+	if r.sink.Cancelled() {
+		return Outcome{}, nil
+	}
+	go func() {
+		defer func() { _ = r.status(PhaseExited) }()
+		_ = r.status(PhaseLoopEnded)
+		if err := r.emit(Event{Kind: EventStatus, Status: &Status{Phase: PhaseAgentExit}}); err != nil {
+			return
+		}
+		r.afterFixLoop(fin, log)
+	}()
+	return Outcome{Launched: true}, nil
+}
+
 // afterFixLoop is verify, diff hygiene, review and harvest for a batch fix.
 func (r *run) afterFixLoop(fin loopFinish, log func(line, level string)) {
 	if r.sink.Gone() {
@@ -628,9 +678,13 @@ func (r *run) afterFixLoop(fin loopFinish, log func(line, level string)) {
 		}
 		cp := vrun
 		h := hygiene
+		next := r.host.LogSource() + " process exited OK — reviewing, then harvesting fix-evidence…"
+		if s.VerifySubmitted() {
+			next = "submitted refs checked — reviewing, then harvesting…"
+		}
 		_ = r.emit(Event{Kind: EventVerification, Verification: &cp, DiffHygiene: &h, Baseline: fin.baseline, Lines: []LogLine{
 			guarded(summary, level),
-			guarded(r.host.LogSource()+" process exited OK — reviewing, then harvesting fix-evidence…", "info"),
+			guarded(next, "info"),
 		}})
 		harvest.Verification = &vrun
 		harvest.AllowResolve = !skipped
@@ -659,6 +713,10 @@ func (r *run) afterFixLoop(fin loopFinish, log func(line, level string)) {
 	}
 	if fin.failed {
 		_ = r.emit(Event{Kind: EventDone, Done: &Done{State: "failed"}})
+		return
+	}
+	if s.VerifySubmitted() {
+		_ = r.emit(Event{Kind: EventDone, Done: &Done{State: "completed", Line: "verify complete — submitted refs checked; nothing pushed"}})
 		return
 	}
 	_ = r.emit(Event{Kind: EventDone, Done: &Done{State: "completed", Line: "batch complete — review worktrees; merge when satisfied"}})

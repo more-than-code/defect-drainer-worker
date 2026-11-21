@@ -1,0 +1,1 @@
+{"kind":"status","jobId":"bjob_rc4","lines":[{"text":"spawning batch fix","level":"info","source":"DefectDrainer","guarded":true}],"status":{"phase":"running","diffBase":{"app":"0123456789abcdef0123456789abcdef01234567"}}}

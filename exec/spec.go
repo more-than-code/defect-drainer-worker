@@ -27,7 +27,17 @@ const (
 	ModeFresh  = "fresh"
 	ModeRerun  = "rerun"
 	ModeResume = "resume"
+	// ModeVerifySubmitted verifies a ref submitted from outside DD (worker
+	// protocol v1 §16): baseline, verify, diff hygiene, review and harvest,
+	// with no coding agent and no branch of DD's own. Batch fix only.
+	ModeVerifySubmitted = "verify_submitted"
 )
+
+// SubmittedRef is one repo's submitted code: a branch name or a commit id.
+type SubmittedRef struct {
+	Repo string `json:"repo"`
+	Ref  string `json:"ref"`
+}
 
 // JobSpec is one run of one job.
 type JobSpec struct {
@@ -82,7 +92,17 @@ type JobSpec struct {
 	// per-job adapter instead, and grok ignores it.
 	Adapter string `json:"adapter,omitempty"`
 	Model   string `json:"model,omitempty"`
+
+	// SubmittedRefs are the refs a ModeVerifySubmitted run checks, one per
+	// worktree repo. BaselineWorktrees are derived by the worker, never sent
+	// by a server: detached worktrees at each repo's base, where the
+	// baseline runs, since Worktrees hold the submitted code.
+	SubmittedRefs     []SubmittedRef        `json:"submittedRefs,omitempty"`
+	BaselineWorktrees []git.WorktreeBinding `json:"baselineWorktrees,omitempty"`
 }
+
+// VerifySubmitted reports whether s verifies a submitted ref.
+func (s JobSpec) VerifySubmitted() bool { return s.Mode == ModeVerifySubmitted }
 
 // AppSettings are the app's agent settings, normalised by the orchestrator.
 type AppSettings struct {
@@ -240,6 +260,9 @@ type Status struct {
 	Phase string `json:"phase"`
 	// DiffBase is set on PhaseRunning: each repo's diff base for this run.
 	DiffBase map[string]string `json:"diffBase,omitempty"`
+	// SubmittedHeads is set on PhaseRunning of a ModeVerifySubmitted run:
+	// each repo's commit that was fetched and is being verified.
+	SubmittedHeads map[string]string `json:"submittedHeads,omitempty"`
 	// Failed and Error are set on PhaseAgentExit.
 	Failed bool   `json:"failed,omitempty"`
 	Error  string `json:"error,omitempty"`
