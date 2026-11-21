@@ -19,7 +19,7 @@ directory) outrank any per-turn instruction that contradicts them.
 |---|---|
 | Spec approval | the operator started this batch — do not wait to be approved |
 | Defects in scope | exactly the ids listed below |
-| Sandbox profile | **strict** (App Settings) |
+| Sandbox profile | **strict** (Project settings) |
 | Branch | the worktree branch already checked out — do not create another |
 | Commits | none: leave changes uncommitted; DD commits them when the operator ships |
 | Verification | operator-authored commands, re-run by DD after you exit; you may not add or edit them |
@@ -60,16 +60,16 @@ this brief, what you could not verify, and what the operator must do next.
 ## Goal
 Header fits on phones
 
-## App
+## Project
 `app`
 
-## Agent sandbox (App Settings)
+## Agent sandbox (Project settings)
 - Profile: **strict** (restrict) — no reliable Simulator access.
 - Code-only in worktrees; operator attaches fix_evidence in console if needed.
 
 ## HARD isolation (enforced by operator — do not violate)
 - Product code edits are **only** allowed inside the **worktree paths** listed below.
-- An app may have **multiple repos**; decide which worktree(s) need changes for each defect.
+- A project may have **multiple repos**; decide which worktree(s) need changes for each defect.
 - **Never** edit primary checkouts (the "primary" paths). Other agents may own those trees.
 - Branch name for this batch: use the worktree branch already checked out (do not switch primary).
 - Inventory SSOT is SQLite + evidence files under `/srv/dd/jobs/j1/evidence/evidence`.

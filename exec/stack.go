@@ -102,11 +102,11 @@ type SignInCall struct {
 }
 
 // AppOrigin is the app URL without a trailing slash.
-func (a AppSettings) AppOrigin() string { return strings.TrimSuffix(a.PreviewURL, "/") }
+func (a ProjectSettings) AppOrigin() string { return strings.TrimSuffix(a.PreviewURL, "/") }
 
 // SignInValues are the {signin.*} placeholder values, or nil without a
 // Stack sign-in.
-func (a AppSettings) SignInValues() map[string]string {
+func (a ProjectSettings) SignInValues() map[string]string {
 	si := a.JobStackSignIn
 	if si == nil {
 		return nil
@@ -151,10 +151,10 @@ func ServicePlaceholder(tok string) string {
 }
 
 // StackOn reports whether the app has a job stack.
-func (a AppSettings) StackOn() bool { return len(a.JobStack) > 0 }
+func (a ProjectSettings) StackOn() bool { return len(a.JobStack) > 0 }
 
 // NeedsPostgres reports whether any preview service needs Postgres.
-func (a AppSettings) NeedsPostgres() bool {
+func (a ProjectSettings) NeedsPostgres() bool {
 	for _, s := range a.JobStack {
 		if s.NeedsPostgres {
 			return true
@@ -164,7 +164,7 @@ func (a AppSettings) NeedsPostgres() bool {
 }
 
 // PreviewTimeout is the effective preview timeout in seconds.
-func (a AppSettings) PreviewTimeout() int {
+func (a ProjectSettings) PreviewTimeout() int {
 	if a.PreviewTimeoutSec == 0 {
 		return DefaultPreviewTimeoutSec
 	}

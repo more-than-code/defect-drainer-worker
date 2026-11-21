@@ -100,6 +100,10 @@ func (w *Worker) fetchSpec(ctx context.Context, jobID, token string) (exec.JobSp
 	}
 	var spec exec.JobSpec
 	if err := json.Unmarshal(body, &spec); err != nil {
+		var conflict *exec.KeyConflictError
+		if errors.As(err, &conflict) {
+			return exec.JobSpec{}, conflict
+		}
 		return exec.JobSpec{}, errors.New("spec is not valid JSON")
 	}
 	return spec, nil

@@ -106,7 +106,7 @@ func TestDDShotSignInChromium(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(handoff, "tmp"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			app := dexec.AppSettings{PreviewCmd: "exec sleep 300", PreviewURL: "http://127.0.0.1:5174",
+			app := dexec.ProjectSettings{PreviewCmd: "exec sleep 300", PreviewURL: "http://127.0.0.1:5174",
 				JobStack:       []dexec.JobStackService{{Name: "web", Repo: "app", Start: "exec python3 app.py 5174", Port: 5174, Health: "/health"}},
 				JobStackSignIn: c.si}
 			st := dexec.DDStack{Services: app.JobStack, Dirs: map[string]string{"app": wt}, TimeoutSec: 60, Random: "r", SignIn: app.SignInValues()}

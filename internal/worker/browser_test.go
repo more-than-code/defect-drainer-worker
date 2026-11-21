@@ -227,7 +227,7 @@ func TestIntersectHosts(t *testing.T) {
 }
 
 func TestValidatePreview(t *testing.T) {
-	ok := []dexec.AppSettings{
+	ok := []dexec.ProjectSettings{
 		{},
 		{Browser: true},
 		{PreviewCmd: "pnpm dev --port 5173 --strictPort", PreviewURL: "http://127.0.0.1:5173"},
@@ -240,7 +240,7 @@ func TestValidatePreview(t *testing.T) {
 			t.Errorf("%+v: %v", a, err)
 		}
 	}
-	bad := []dexec.AppSettings{
+	bad := []dexec.ProjectSettings{
 		{PreviewCmd: "x"},
 		{PreviewURL: "http://127.0.0.1:5173"},
 		{PreviewCmd: "a\nb", PreviewURL: "http://127.0.0.1:5173"},
@@ -364,9 +364,9 @@ func TestBrowserJobEndToEnd(t *testing.T) {
 		policy: defaultPolicy + "agent_browser = \"" + browser + "\"\nagent_allowed_domains = [\"registry.npmjs.org\", \"api.example.com\"]\n"})
 	readyBrowser(h, root, true)
 	spec := fixSpec("bjob_wb_on")
-	spec.App.Browser = true
-	spec.App.PreviewCmd, spec.App.PreviewURL = "pnpm dev --port 5173 --strictPort", "http://127.0.0.1:5173"
-	spec.App.AgentHosts = []string{"api.example.com", "evil.example.org"}
+	spec.Project.Browser = true
+	spec.Project.PreviewCmd, spec.Project.PreviewURL = "pnpm dev --port 5173 --strictPort", "http://127.0.0.1:5173"
+	spec.Project.AgentHosts = []string{"api.example.com", "evil.example.org"}
 	h.offerJob(spec, nil)
 	h.waitDone(spec.JobID, 60*time.Second)
 	log := joinLines(h.fs.jobEvents(spec.JobID))
@@ -444,7 +444,7 @@ func TestBrowserDropped(t *testing.T) {
 			root, _ := scanRoot(t)
 			readyBrowser(h, root, c.ready)
 			spec := fixSpec("bjob_wb_drop" + string(rune('a'+i)))
-			spec.App.Browser = true
+			spec.Project.Browser = true
 			if c.mutate != nil {
 				c.mutate(&spec)
 			}
@@ -452,8 +452,8 @@ func TestBrowserDropped(t *testing.T) {
 			if d.reason != "" {
 				t.Fatalf("declined %s %s", d.reason, d.detail)
 			}
-			if d.spec.App.Browser || d.browser != "" || !slices.ContainsFunc(d.notes, func(n string) bool { return strings.HasPrefix(n, c.note) }) {
-				t.Fatalf("decision browser=%v %q notes %v", d.spec.App.Browser, d.browser, d.notes)
+			if d.spec.Project.Browser || d.browser != "" || !slices.ContainsFunc(d.notes, func(n string) bool { return strings.HasPrefix(n, c.note) }) {
+				t.Fatalf("decision browser=%v %q notes %v", d.spec.Project.Browser, d.browser, d.notes)
 			}
 		})
 	}
@@ -463,7 +463,7 @@ func TestBrowserDropped(t *testing.T) {
 		t.Fatalf("plain job: %+v", d)
 	}
 	bad := fixSpec("bjob_wb_bad")
-	bad.App.PreviewCmd = "pnpm dev"
+	bad.Project.PreviewCmd = "pnpm dev"
 	if d := h.w.applyPolicy(bad, "", "", ""); d.reason != workerproto.DeclineBadSpec {
 		t.Fatalf("preview without url: %+v", d)
 	}

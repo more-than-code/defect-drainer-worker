@@ -143,7 +143,7 @@ equals `sha256sum /etc/dd-worker/policy.toml`.
 ### What a job's agent can reach
 
 - **Sandbox:** every agent except grok runs its CLI's own sandbox, `strict`,
-  whatever the app asks for. The agent writes only its job's handoff and
+  whatever the project asks for. The agent writes only its job's handoff and
   worktrees.
 - **Git:** the agent can read its job's repo clone (`git status`, `diff`,
   `log` work) but cannot write it, and cannot read any other clone. It leaves
@@ -165,7 +165,7 @@ equals `sha256sum /etc/dd-worker/policy.toml`.
   handoff, not the home directory, and are removed with the job.
 - **Browser** (Claude fix jobs only): off unless `agent_browser` is set; see
   [After-fix screenshots](#after-fix-screenshots).
-- **Job stack** (browser jobs only): an app's services and a throwaway
+- **Job stack** (browser jobs only): a project's services and a throwaway
   Postgres (with `agent_postgres`), loopback only; see
   [Job stack](#job-stack).
 - **Network** (Claude only; other adapters ignore it): none by default. `agent_allowed_domains` lists the exact
@@ -173,7 +173,7 @@ equals `sha256sum /etc/dd-worker/policy.toml`.
   `["registry.npmjs.org"]` for npm installs. Lowercase hostnames only: no
   wildcards, IP addresses or ports, at most 16. A bad entry makes
   `dd-worker policy check` fail and the worker decline every job.
-  An app can ask for fewer of these hosts (from 0.2.0-rc3): its jobs then
+  A project can ask for fewer of these hosts (from 0.2.0-rc3): its jobs then
   reach only the hosts in both lists, and the job log names each one dropped.
 - **Cost** (Claude only: the other adapters report no cost): the server caps
   each job's agent cost (default $5). The loop
@@ -183,7 +183,7 @@ equals `sha256sum /etc/dd-worker/policy.toml`.
   The job also records its cost by model (`agentRun.costByModel`,
   `review.costByModel`); the cap stays on the total.
 - **Model** (Claude; from 0.2.0-rc4): the server sends each job's model
-  (`sonnet` unless the app sets one) and the worker runs Claude with
+  (`sonnet` unless the project sets one) and the worker runs Claude with
   `--model`; reviewers use the job's model. `allowed_models` limits the
   models this host runs, for example `["sonnet", "haiku"]`: names match
   exactly and case-sensitively (an alias does not cover a full `claude-…` id), at most 16. A job
@@ -238,7 +238,7 @@ What it changes, for jobs the server sends with screenshots on:
   over 3 seconds), the browser reports `scan_incomplete` and the host takes
   no browser jobs.
 - The worker writes a `dd-shot` helper into the job. The agent runs the
-  app's preview command (an app setting) in its worktree, screenshots pages
+  app's preview command (a project setting) in its worktree, screenshots pages
   with the browser into the job's evidence, and stops the preview, all in
   one sandboxed command. The preview gets no app secrets.
 - A request this host doesn't allow is dropped and noted in the job log; the
@@ -251,7 +251,7 @@ entry and keeps closing the worker's connection.
 
 ### Job stack
 
-An app whose pages need a backend can define a job stack in Defect
+A project whose pages need a backend can define a job stack in Defect
 Drainer: up to 4 services (install, migrate, seeds, start, a port and a
 health path) and a throwaway Postgres. A browser job then boots that stack
 inside the agent's sandbox, both for the agent to try the app and for the
@@ -275,17 +275,17 @@ policy key.
 3. Restart the worker. Settings → Workers shows `postgres` as ready with its
    version; `status.json` shows it under `tools` and `policy.postgres`.
 
-What it changes, for jobs of an app with a job stack:
+What it changes, for jobs of a project with a job stack:
 
 - The worker writes a `dd-stack` helper next to `dd-shot`. In one sandboxed
   command it creates a fresh database in the job's temp directory (loopback
   only, no unix socket), runs each service's steps in its worktree, waits up
   to 120 s for each health URL, runs the agent's or dd-shot's command, then
   stops everything. Its logs stay in `.dd-stack/` in the job's handoff.
-- The env it gives the services holds dev-only values the app's admin set,
+- The env it gives the services holds dev-only values the project's admin set,
   plus a fresh random value per job run, which the worker removes from every
   log, note and event it sends.
-- An app can also set a **Stack sign-in**: its own seed user (an email and
+- A project can also set a **Stack sign-in**: its own seed user (an email and
   password valid only in the job's throwaway database) and how to sign in, a
   form or an HTTP call. `dd-shot` then signs in before its screenshots with
   `dd-worker shot`, a browser driver built into the worker binary (nothing

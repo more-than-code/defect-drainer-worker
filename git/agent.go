@@ -78,9 +78,9 @@ func SandboxHeadline(a agentadapter.Adapter, sandbox string) string {
 		return "SANDBOX: the " + string(a.Name()) + " CLI's own sandbox, strict (Defect Drainer runs " + string(a.Name()) + " strict only)."
 	}
 	if sandbox == "workspace" {
-		return "SANDBOX: --sandbox workspace (App Settings)."
+		return "SANDBOX: --sandbox workspace (Project settings)."
 	}
-	return "SANDBOX: --sandbox strict / restrict (App Settings)."
+	return "SANDBOX: --sandbox strict / restrict (Project settings)."
 }
 
 // adapterSandboxNotes is the sandbox paragraph for a non-grok adapter: the

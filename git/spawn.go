@@ -620,7 +620,7 @@ func buildBatchFixCLIPrompt(handoffAbs, batchID, defectsRoot, sandbox string, wo
 		sandboxNotes = adapterSandboxNotes(opts.Adapter, handoffAbs, defectsRoot, opts.ReadOnly, opts.AllowedDomains)
 	} else if sandbox == "workspace" {
 		sandboxNotes = []string{
-			"SANDBOX: --sandbox workspace (App Settings).",
+			"SANDBOX: --sandbox workspace (Project settings).",
 			"- Read: host filesystem (iOS Simulator, Xcode, simctl data allowed).",
 			"- Write: " + cwdWrite + ", ~/.grok/, and temp only.",
 			"- Product code: edit only under cwd/worktrees/…",
@@ -629,7 +629,7 @@ func buildBatchFixCLIPrompt(handoffAbs, batchID, defectsRoot, sandbox string, wo
 		}
 	} else {
 		sandboxNotes = []string{
-			"SANDBOX: --sandbox strict / restrict (App Settings).",
+			"SANDBOX: --sandbox strict / restrict (Project settings).",
 			"- Read: cwd + system paths only (no ~/Library Simulator data).",
 			"- Write: " + cwdWrite + ", ~/.grok/, and temp.",
 			"- Product code: edit only under cwd/worktrees/…",

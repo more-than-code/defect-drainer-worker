@@ -182,7 +182,7 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 			return fail(workerproto.CodeInternal, err.Error())
 		}
 		d = w.currentRedactor().Values(d)
-		if si := meta.Spec.App.JobStackSignIn; si != nil && si.Password != "" {
+		if si := meta.Spec.Project.JobStackSignIn; si != nil && si.Password != "" {
 			d = strings.ReplaceAll(d, si.Password, "[redacted]")
 		}
 		truncated := false
@@ -225,7 +225,7 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 			}
 		}
 		// S10: the Stack sign-in password never ships.
-		if si := meta.Spec.App.JobStackSignIn; si != nil && si.Password != "" {
+		if si := meta.Spec.Project.JobStackSignIn; si != nil && si.Password != "" {
 			for _, r := range f.Control.Repos {
 				b, _ := binding(meta, r.Repo)
 				base := meta.Spec.DiffBase[b.Repo]

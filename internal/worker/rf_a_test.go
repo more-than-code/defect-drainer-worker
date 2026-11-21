@@ -120,8 +120,8 @@ func TestClaudeRunsStrictAndNoScreenshotReleases(t *testing.T) {
 		"cat '" + claudeFixture(t, "c1-basic") + "'\nexit 0\n"
 	h := newHarness(t, harnessOpts{agent: body})
 	spec := fixSpec("bjob_rfa_strict")
-	spec.App.Sandbox = "workspace"
-	spec.App.SimulatorWrites = true
+	spec.Project.Sandbox = "workspace"
+	spec.Project.SimulatorWrites = true
 	spec.Caps.AgentMaxIters = 4
 	h.offerJob(spec, nil)
 	h.waitDone(spec.JobID, 60*time.Second)
@@ -131,11 +131,11 @@ func TestClaudeRunsStrictAndNoScreenshotReleases(t *testing.T) {
 		t.Errorf("no narrowing note:\n%s", log)
 	}
 	meta, _ := readMeta(h.paths.JobMeta(spec.JobID))
-	if meta.Spec.App.Sandbox != "strict" || meta.Spec.App.SimulatorWrites || meta.Spec.Caps.AgentMaxCostUSD != DefaultAgentMaxCostUSD {
-		t.Fatalf("stored spec app=%+v caps=%+v", meta.Spec.App, meta.Spec.Caps)
+	if meta.Spec.Project.Sandbox != "strict" || meta.Spec.Project.SimulatorWrites || meta.Spec.Caps.AgentMaxCostUSD != DefaultAgentMaxCostUSD {
+		t.Fatalf("stored spec app=%+v caps=%+v", meta.Spec.Project, meta.Spec.Caps)
 	}
 	brief, _ := os.ReadFile(filepath.Join(h.paths.Handoff(spec.JobID), "BRIEF.md"))
-	if !strings.Contains(string(brief), "| Sandbox profile | **strict** (App Settings) |") || !strings.Contains(string(brief), "Network: none") {
+	if !strings.Contains(string(brief), "| Sandbox profile | **strict** (Project settings) |") || !strings.Contains(string(brief), "Network: none") {
 		t.Errorf("BRIEF.md:\n%s", brief)
 	}
 	argv, _ := os.ReadFile(h.argv)
@@ -237,7 +237,7 @@ func TestVerifySkippedByHostPolicy(t *testing.T) {
 	pol := strings.Replace(defaultPolicy, "allow_verify_commands = true", "allow_verify_commands = false", 1)
 	h := newHarness(t, harnessOpts{policy: pol})
 	spec := fixSpec("bjob_rfa_vskip")
-	spec.App.VerifyCommands = []dexec.VerifyCommand{{Repo: "app", Command: "true"}, {Repo: "app", Command: "false"}}
+	spec.Project.VerifyCommands = []dexec.VerifyCommand{{Repo: "app", Command: "true"}, {Repo: "app", Command: "false"}}
 	h.offerJob(spec, nil)
 	h.waitDone(spec.JobID, 60*time.Second)
 	events := h.fs.jobEvents(spec.JobID)
@@ -253,8 +253,8 @@ func TestVerifySkippedByHostPolicy(t *testing.T) {
 	// Allowed verify: a VerifySkipped from the server never reaches the run.
 	h2 := newHarness(t, harnessOpts{})
 	spec2 := fixSpec("bjob_rfa_vforged")
-	spec2.App.VerifyCommands = []dexec.VerifyCommand{{Repo: "app", Command: "true"}}
-	spec2.App.VerifySkipped, spec2.App.VerifySkippedCommands = "host policy", 9
+	spec2.Project.VerifyCommands = []dexec.VerifyCommand{{Repo: "app", Command: "true"}}
+	spec2.Project.VerifySkipped, spec2.Project.VerifySkippedCommands = "host policy", 9
 	h2.offerJob(spec2, nil)
 	h2.waitDone(spec2.JobID, 60*time.Second)
 	if hv := lastHarvest(h2.fs.jobEvents(spec2.JobID)); hv == nil || !hv.AllowResolve || !hv.Verification.Ran {

@@ -125,7 +125,7 @@ func (j *job) launch(d decision, leaseID string) {
 	// fresh socket masks from the offer's decision.
 	eh.Browser, eh.MaskedSockets = d.browser, d.masked
 	eh.Postgres = d.postgres
-	if spec.App.JobStackSignIn != nil {
+	if spec.Project.JobStackSignIn != nil {
 		eh.ShotBin = shotBin()
 	}
 	out, err := exec.Start(ctx, eh, spec, runSink{j: j, gen: gen}, exec.Hooks{})

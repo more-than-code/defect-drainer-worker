@@ -121,7 +121,7 @@ func TestGitTokenPathAndNoTokenAtRest(t *testing.T) {
 	h.fs.mu.Unlock()
 	id := "bjob_tok"
 	spec := fixSpec(id)
-	spec.App.VerifyCommands = []dexec.VerifyCommand{{Repo: "app", Command: "env > '" + verifyEnv + "'"}}
+	spec.Project.VerifyCommands = []dexec.VerifyCommand{{Repo: "app", Command: "env > '" + verifyEnv + "'"}}
 	h.offerJob(spec, nil)
 	if d := h.waitDone(id, 60*time.Second); d.State == "failed" {
 		t.Fatalf("job failed: %+v", d)

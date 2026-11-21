@@ -306,12 +306,12 @@ These close the local-only assumptions in W1a's seam. The `local` transport keep
 7. **Seq:** `seq` stays at frame level only. `exec.Event` is unchanged.
 8. **Remote job fixes (worker 0.2.0-rc2, additive; old peers ignore every field under §2):**
    - `JobSpec.Caps.agentMaxCostUsd` (number, optional): the per-job agent cost cap. The worker lowers it to policy `max_cost_usd` when that is smaller; with none from the server it uses the policy value, else 5. The loop counts the job's total, Resumes included.
-   - `JobSpec.App.verifySkipped` (string, optional, `"host policy"`) and `verifySkippedCommands` (number, optional): set **only by the worker** at offer when policy `allow_verify_commands` is false and the spec had verify commands. A value from the server is dropped. Such a run records `verification {ran:false, skippedReason}` and its harvest has `allowResolve:false`, so no defect resolves.
+   - `JobSpec.Project.verifySkipped` (string, optional, `"host policy"`) and `verifySkippedCommands` (number, optional): set **only by the worker** at offer when policy `allow_verify_commands` is false and the spec had verify commands. A value from the server is dropped. Such a run records `verification {ran:false, skippedReason}` and its harvest has `allowResolve:false`, so no defect resolves.
    - `VerificationRun.skippedReason` (string, optional).
    - `AgentRun.stoppedBy` gains `blocked` (a `BLOCKED: <reason>` line in `NOTES.md`), `no_progress` (two iterations in a row changed nothing and left the same artifacts missing) and `budget` (the cost cap was reached). A stop of any of these still verifies, reviews and harvests, like `iterations`. The loop checks, first match wins: `exit`, `artifacts`, `blocked`, `no_progress`, `budget`, `wall`, `iterations`.
    - `AgentRun.stopReason` (string, optional): the agent's reason for `blocked`, at most 200 characters.
-   - `JobSpec.App.sandbox`: for any adapter but grok the worker narrows it to `strict` (and `simulatorWrites` to false) at offer.
-9. **Worker browser (worker 0.2.0-rc3, additive, `browser.v1`, §15):** `JobSpec.App` gains `browser` (bool), `previewCmd`, `previewUrl` (strings) and `agentHosts` (string list), all optional.
+   - `JobSpec.Project.sandbox`: for any adapter but grok the worker narrows it to `strict` (and `simulatorWrites` to false) at offer.
+9. **Worker browser (worker 0.2.0-rc3, additive, `browser.v1`, §15):** `JobSpec.Project` gains `browser` (bool), `previewCmd`, `previewUrl` (strings) and `agentHosts` (string list), all optional.
 10. **Agent model and cost by model (worker 0.2.0-rc4, additive; old peers ignore every field under §2):**
     - `JobSpec.model` now reaches Claude as `--model <model>`, for the implementer and every review lens; an empty model passes no flag (the CLI's default). The server resolves the default (`sonnet`); the worker adds none.
     - Hello and status `policy` gain `allowed_models` (string list, at most 16, each matching the `model` pattern): policy `allowed_models`. Omitted when unset, which means any model. Display only: the worker enforces it (§6.5).
@@ -370,7 +370,7 @@ Additive in 0.2.0-rc6: `bad_managed_url` (not an https URL with a host, longer t
 
 - **Names:** a capability is a lowercase dotted name with a version, for example `blobs.v1`.
 - **Gating:** a gated frame or field is sent only if both `hello` lists name it. Absent means the old behaviour, and a v1 worker keeps working when the server adds one. Criterion 11 is tested with a fake server and a fake worker.
-- **Baseline:** every v1 worker must advertise `blobs.v1`. Since N6, the server offers remote jobs only to workers that also advertise `gittoken.v1` (§14). Future additions (`sse_log`, `codex_adapter`, `multi_job`, …) are new capabilities. Since the worker after 0.2.0-rc4, `verify_submitted.v1` (§16) gates the `verify_submitted` mode. Since 0.2.0-rc6, `job_stack.v1` (§17) gates the job-stack spec fields.
+- **Baseline:** every v1 worker must advertise `blobs.v1`. Since N6, the server offers remote jobs only to workers that also advertise `gittoken.v1` (§14). Future additions (`sse_log`, `codex_adapter`, `multi_job`, …) are new capabilities. Since the worker after 0.2.0-rc4, `verify_submitted.v1` (§16) gates the `verify_submitted` mode. Since 0.2.0-rc6, `job_stack.v1` (§17) gates the job-stack spec fields. Since 0.2.0-rc7, `project_keys.v1` (§18) says which spec keys a worker reads.
 
 ## 11. Security and limits
 
@@ -496,7 +496,7 @@ Additive (worker-browser spec, decisions B1–B8). A remote fix job for a UI def
 - **Bounds:** more than 20,000 entries in a root, or over 3 s in total, leaves the scan incomplete.
 - **Then:** policy `agent_deny_sockets` is added, entries under a masked ancestor are dropped, and a mask that is or contains the worker's state dir is refused (logged).
 
-**Spec fields** (`JobSpec.App`):
+**Spec fields** (`JobSpec.Project`):
 
 | Field | Rule |
 |---|---|
@@ -562,7 +562,7 @@ Additive (the control plane's job-stack spec, decisions S1–S9). An app defines
 - `unsafe`: the directory or a binary is no longer root's alone;
 - `unsupported_os`: not Linux.
 
-**Spec fields** (`JobSpec.App`), else `decline bad_spec`:
+**Spec fields** (`JobSpec.Project`), else `decline bad_spec`:
 
 | Field | Rule |
 |---|---|
@@ -597,3 +597,20 @@ It prints only these lines, never an env value: `DD-STACK UP postgres 127.0.0.1:
 It prints `DD-SHOT SIGNIN OK <form|http>`, then takes each screenshot at 1280×800 after the page's network settles, with §15's lines. A failed sign-in prints `DD-SHOT FAIL <DEF-id> signin <reason>` (`no-field <email|password|submit>`, `still-on-signin`, `http <status>`, `redirected <path>`, `open …`, `browser …`), takes no screenshot and exits 1. Neither prints a credential.
 
 **Brief.** A `## Stack` section lists each service's name, repo, steps, URL and health path, and Postgres when used (never an env value), with how to run `dd-stack` and the rule that setup files never go in a worktree. With a Stack sign-in it names the test user's email and the `DD_SIGNIN_*` env, never the password, and the Screenshots section says `dd-shot` signs in first.
+
+## 18. Project keys (`project_keys.v1`, worker 0.2.0-rc7)
+
+Additive. What Defect Drainer called an **app** (a group of repos with its defects and settings) is now a **project**. Only key names change: values, ids and behaviour stay as they are. `JobSpec.Project` was `JobSpec.App` before rc7.
+
+| Where | Key from rc7 | Deprecated alias (until 1.0) |
+|---|---|---|
+| `JobSpec` | `projectId` | `appId` |
+| `JobSpec` | `project` (the settings object, same fields) | `app` |
+| `Defect`, `Batch`, `TestRun` | `project_id` | `app_id` |
+
+- **Capability.** The worker lists `project_keys.v1` in `hello.capabilities`. The server sends the old keys **only** to a worker that does not list it, so a worker before rc7 keeps working unchanged.
+- **Decoding.** A worker with `project_keys.v1` reads the new keys. When a new key is absent (for an id, also when it is empty; for `project`, also when it is `null`), it reads the old one. A spec that carries a key and its alias with different values, anywhere in it, is declined `bad_spec`; the worker logs `conflicting keys: <key> and <alias> differ`. The same values under both keys are accepted.
+- **Encoding.** Everything the worker writes (its job record on disk) uses the new keys only. A job record written by an older worker still reads.
+- **Text.** The brief's `## Project` section, `- Project:` in a test brief, the `(Project settings)` labels and the `project <id> …` log line replace their "App" forms.
+- **Not changed:** paths stay keyed by job id, redaction is the same, and the worker never reads an id's prefix.
+- **1.0** removes the aliases: the server sends and the worker reads the new keys only.

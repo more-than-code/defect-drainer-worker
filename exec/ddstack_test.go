@@ -370,7 +370,7 @@ func TestDDShotStackFails(t *testing.T) {
 // S10: with a Stack sign-in, dd-stack exports DD_SIGNIN_* to the services
 // and the command, and fills the {signin.*} placeholders.
 func TestDDStackSignInEnv(t *testing.T) {
-	a := AppSettings{PreviewURL: "http://127.0.0.1:5174/", JobStackSignIn: &StackSignIn{URL: "/login", Email: "seed@example.com", Password: "it's-a-pass"}}
+	a := ProjectSettings{PreviewURL: "http://127.0.0.1:5174/", JobStackSignIn: &StackSignIn{URL: "/login", Email: "seed@example.com", Password: "it's-a-pass"}}
 	e := newDDStackEnv(t, func(s *DDStack) {
 		s.SignIn = a.SignInValues()
 		s.Services = s.Services[1:]
@@ -392,7 +392,7 @@ func TestDDStackSignInEnv(t *testing.T) {
 
 // The HTTP body is JSON: placeholder values are escaped into it.
 func TestNewShotSignIn(t *testing.T) {
-	a := AppSettings{PreviewURL: "http://127.0.0.1:5173", JobStack: []JobStackService{{Name: "api", Port: 3000}},
+	a := ProjectSettings{PreviewURL: "http://127.0.0.1:5173", JobStack: []JobStackService{{Name: "api", Port: 3000}},
 		JobStackSignIn: &StackSignIn{URL: "/login", Email: "seed@example.com", Password: `pa"ss\word<1>`, Method: SignInHTTP,
 			HTTP:        &SignInCall{Method: "POST", Path: "/api/login", BodyTemplate: `{"e":"{signin.email}","p":"{signin.password}","r":"{random}","u":"{services.api.url}"}`},
 			SuccessPath: "/account?tab=1"}}

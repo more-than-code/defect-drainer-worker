@@ -31,7 +31,7 @@ type ShotSignIn struct {
 // NewShotSignIn renders a's Stack sign-in with vals (the dd-stack
 // placeholder values, {signin.*} included). The body's placeholder values
 // are JSON-escaped, since the body is JSON.
-func NewShotSignIn(a AppSettings, vals map[string]string) ShotSignIn {
+func NewShotSignIn(a ProjectSettings, vals map[string]string) ShotSignIn {
 	si := a.JobStackSignIn
 	origin := a.AppOrigin()
 	out := ShotSignIn{Method: si.Method, URL: origin + si.URL, Email: si.Email, Password: si.Password, Form: si.Form}

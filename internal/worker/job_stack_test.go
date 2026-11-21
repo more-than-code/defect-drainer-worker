@@ -143,16 +143,16 @@ func TestPostgresReadiness(t *testing.T) {
 // on its one worktree.
 func stackSpec(jobID string) dexec.JobSpec {
 	s := fixSpec(jobID)
-	s.App.Browser = true
-	s.App.PreviewCmd, s.App.PreviewURL = "pnpm dev --port 5173", "http://127.0.0.1:5173"
-	s.App.JobStack = []dexec.JobStackService{
+	s.Project.Browser = true
+	s.Project.PreviewCmd, s.Project.PreviewURL = "pnpm dev --port 5173", "http://127.0.0.1:5173"
+	s.Project.JobStack = []dexec.JobStackService{
 		{Name: "api", Repo: "app", Install: "pnpm install --ignore-scripts", Migrate: "pnpm migrate", Seed: []string{"pnpm seed:users"},
 			Start: "pnpm start", Port: 3000, Health: "/health", NeedsPostgres: true,
 			Env: map[string]string{"DATABASE_URL": "{postgres.url}", "SHARED_SECRET": "{random}", "SELF": "{services.api.url}"}},
 		{Name: "worker-2", Repo: "app", Start: "pnpm worker", Port: 3001, Health: "/"},
 	}
-	s.App.PreviewEnv = map[string]string{"BACKEND_URL": "{services.api.url}", "BFF_SHARED_SECRET": "{random}"}
-	s.App.PreviewTimeoutSec = 120
+	s.Project.PreviewEnv = map[string]string{"BACKEND_URL": "{services.api.url}", "BFF_SHARED_SECRET": "{random}"}
+	s.Project.PreviewTimeoutSec = 120
 	return s
 }
 
@@ -162,14 +162,14 @@ func TestValidateServices(t *testing.T) {
 		t.Fatalf("valid stack refused: %v", err)
 	}
 	ok := []func(*dexec.JobSpec){
-		func(s *dexec.JobSpec) { s.App.JobStack, s.App.PreviewEnv = nil, nil },
-		func(s *dexec.JobSpec) { s.App.PreviewTimeoutSec = 0 },
-		func(s *dexec.JobSpec) { s.App.PreviewTimeoutSec = 30 },
-		func(s *dexec.JobSpec) { s.App.PreviewTimeoutSec = 300 },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Env["JSON"] = `{"a":{"b":1}} { spaced } {}` },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Seed = []string{"a", "b", "c", "d"} },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Health = "/api/health?deep=1" },
-		func(s *dexec.JobSpec) { s.App.PreviewCmd, s.App.PreviewURL = "", "" },
+		func(s *dexec.JobSpec) { s.Project.JobStack, s.Project.PreviewEnv = nil, nil },
+		func(s *dexec.JobSpec) { s.Project.PreviewTimeoutSec = 0 },
+		func(s *dexec.JobSpec) { s.Project.PreviewTimeoutSec = 30 },
+		func(s *dexec.JobSpec) { s.Project.PreviewTimeoutSec = 300 },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Env["JSON"] = `{"a":{"b":1}} { spaced } {}` },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Seed = []string{"a", "b", "c", "d"} },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Health = "/api/health?deep=1" },
+		func(s *dexec.JobSpec) { s.Project.PreviewCmd, s.Project.PreviewURL = "", "" },
 	}
 	for i, m := range ok {
 		s := stackSpec("bjob_ps_ok")
@@ -186,45 +186,45 @@ func TestValidateServices(t *testing.T) {
 		return m
 	}
 	bad := []func(*dexec.JobSpec){
-		func(s *dexec.JobSpec) { s.App.PreviewTimeoutSec = 29 },
-		func(s *dexec.JobSpec) { s.App.PreviewTimeoutSec = 301 },
+		func(s *dexec.JobSpec) { s.Project.PreviewTimeoutSec = 29 },
+		func(s *dexec.JobSpec) { s.Project.PreviewTimeoutSec = 301 },
 		func(s *dexec.JobSpec) {
 			for i := 0; i < 3; i++ {
-				c := s.App.JobStack[1]
+				c := s.Project.JobStack[1]
 				c.Name, c.Port = "x"+string(rune('a'+i)), 4000+i
-				s.App.JobStack = append(s.App.JobStack, c)
+				s.Project.JobStack = append(s.Project.JobStack, c)
 			}
 		},
-		func(s *dexec.JobSpec) { s.App.JobStack[1].Name = "api" },
-		func(s *dexec.JobSpec) { s.App.JobStack[1].Name = "Api" },
-		func(s *dexec.JobSpec) { s.App.JobStack[1].Name = "9api" },
-		func(s *dexec.JobSpec) { s.App.JobStack[1].Name = strings.Repeat("a", 33) },
-		func(s *dexec.JobSpec) { s.App.JobStack[1].Repo = "other" },
-		func(s *dexec.JobSpec) { s.App.JobStack[1].Start = "" },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Migrate = "a\nb" },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Install = strings.Repeat("x", 501) },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Seed = []string{"a", "b", "c", "d", "e"} },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Seed = []string{" "} },
-		func(s *dexec.JobSpec) { s.App.JobStack[1].Port = 1023 },
-		func(s *dexec.JobSpec) { s.App.JobStack[1].Port = 65536 },
-		func(s *dexec.JobSpec) { s.App.JobStack[1].Port = 3000 },
-		func(s *dexec.JobSpec) { s.App.JobStack[1].Port = 5173 },
-		func(s *dexec.JobSpec) { s.App.JobStack[1].Health = "health" },
-		func(s *dexec.JobSpec) { s.App.JobStack[1].Health = "/a b" },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Env = many(33) },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Env["1BAD"] = "x" },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Env["X"] = "a\nb" },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Env["X"] = strings.Repeat("x", 1025) },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Env["X"] = "{secret:API_KEY}" },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Env["X"] = "{services.nope.url}" },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Env["X"] = "{services.api.port}" },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Env["X"] = "{env.HOME}" },
-		func(s *dexec.JobSpec) { s.App.PreviewEnv["X"] = "{radnom}" },
-		func(s *dexec.JobSpec) { s.App.PreviewEnv["X"] = "{Random}" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[1].Name = "api" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[1].Name = "Api" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[1].Name = "9api" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[1].Name = strings.Repeat("a", 33) },
+		func(s *dexec.JobSpec) { s.Project.JobStack[1].Repo = "other" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[1].Start = "" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Migrate = "a\nb" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Install = strings.Repeat("x", 501) },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Seed = []string{"a", "b", "c", "d", "e"} },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Seed = []string{" "} },
+		func(s *dexec.JobSpec) { s.Project.JobStack[1].Port = 1023 },
+		func(s *dexec.JobSpec) { s.Project.JobStack[1].Port = 65536 },
+		func(s *dexec.JobSpec) { s.Project.JobStack[1].Port = 3000 },
+		func(s *dexec.JobSpec) { s.Project.JobStack[1].Port = 5173 },
+		func(s *dexec.JobSpec) { s.Project.JobStack[1].Health = "health" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[1].Health = "/a b" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Env = many(33) },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Env["1BAD"] = "x" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Env["X"] = "a\nb" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Env["X"] = strings.Repeat("x", 1025) },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Env["X"] = "{secret:API_KEY}" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Env["X"] = "{services.nope.url}" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Env["X"] = "{services.api.port}" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Env["X"] = "{env.HOME}" },
+		func(s *dexec.JobSpec) { s.Project.PreviewEnv["X"] = "{radnom}" },
+		func(s *dexec.JobSpec) { s.Project.PreviewEnv["X"] = "{Random}" },
 		func(s *dexec.JobSpec) {
-			s.App.JobStack[0].NeedsPostgres = false
+			s.Project.JobStack[0].NeedsPostgres = false
 		},
-		func(s *dexec.JobSpec) { s.App.JobStack = nil },
+		func(s *dexec.JobSpec) { s.Project.JobStack = nil },
 	}
 	for i, m := range bad {
 		s := stackSpec("bjob_ps_bad")
@@ -258,9 +258,9 @@ func TestApplyServices(t *testing.T) {
 	// No browser: services cleared with a note, no decline.
 	h := newHarness(t, harnessOpts{policy: defaultPolicy + "agent_postgres = \"" + pg + "\"\n"})
 	d := h.w.applyPolicy(stackSpec("bjob_ps_nob"), "", "", "")
-	if d.reason != "" || d.spec.App.StackOn() || d.spec.App.PreviewEnv != nil || d.spec.App.PreviewTimeoutSec != 0 || d.postgres != "" ||
+	if d.reason != "" || d.spec.Project.StackOn() || d.spec.Project.PreviewEnv != nil || d.spec.Project.PreviewTimeoutSec != 0 || d.postgres != "" ||
 		!slices.Contains(d.notes, "job stack off: browser jobs only") {
-		t.Fatalf("no browser: %s %+v notes %v", d.reason, d.spec.App, d.notes)
+		t.Fatalf("no browser: %s %+v notes %v", d.reason, d.spec.Project, d.notes)
 	}
 
 	cases := []struct {
@@ -284,7 +284,7 @@ func TestApplyServices(t *testing.T) {
 				}
 				return
 			}
-			if d.reason != "" || !d.spec.App.StackOn() || d.postgres != pg {
+			if d.reason != "" || !d.spec.Project.StackOn() || d.postgres != pg {
 				t.Fatalf("decision %q %q postgres %q", d.reason, d.detail, d.postgres)
 			}
 		})
@@ -295,9 +295,9 @@ func TestApplyServices(t *testing.T) {
 	root, _ := scanRoot(t)
 	readyBrowser(h, root, true)
 	s := stackSpec("bjob_ps_nopg")
-	s.App.JobStack = s.App.JobStack[1:]
-	s.App.PreviewEnv = nil
-	if d := h.w.applyPolicy(s, "", "", ""); d.reason != "" || !d.spec.App.StackOn() || d.postgres != "" {
+	s.Project.JobStack = s.Project.JobStack[1:]
+	s.Project.PreviewEnv = nil
+	if d := h.w.applyPolicy(s, "", "", ""); d.reason != "" || !d.spec.Project.StackOn() || d.postgres != "" {
 		t.Fatalf("stack without Postgres: %q %q", d.reason, d.detail)
 	}
 }
@@ -381,9 +381,9 @@ func TestNoStackJobUnchanged(t *testing.T) {
 	root, _ := scanRoot(t)
 	readyBrowser(h, root, true)
 	spec := fixSpec("bjob_ps_none")
-	spec.App.Browser = true
-	spec.App.PreviewCmd, spec.App.PreviewURL = "pnpm dev --port 5173", "http://127.0.0.1:5173"
-	spec.App.PreviewTimeoutSec = 200
+	spec.Project.Browser = true
+	spec.Project.PreviewCmd, spec.Project.PreviewURL = "pnpm dev --port 5173", "http://127.0.0.1:5173"
+	spec.Project.PreviewTimeoutSec = 200
 	h.offerJob(spec, nil)
 	h.waitDone(spec.JobID, 60*time.Second)
 	handoff := h.paths.Handoff(spec.JobID)
@@ -402,10 +402,10 @@ const testSignInPassword = "seed-Pass!word1"
 // signInSpec is stackSpec with an HTTP Stack sign-in.
 func signInSpec(jobID string) dexec.JobSpec {
 	s := stackSpec(jobID)
-	s.App.JobStackSignIn = &dexec.StackSignIn{URL: "/login", Email: "seed@example.com", Password: testSignInPassword, Method: dexec.SignInHTTP,
+	s.Project.JobStackSignIn = &dexec.StackSignIn{URL: "/login", Email: "seed@example.com", Password: testSignInPassword, Method: dexec.SignInHTTP,
 		HTTP:        &dexec.SignInCall{Method: "POST", Path: "/api/login", BodyTemplate: `{"email":"{signin.email}","password":"{signin.password}","api":"{services.api.url}"}`},
 		SuccessPath: "/account"}
-	s.App.PreviewEnv["LOGIN_AS"] = "{signin.email}"
+	s.Project.PreviewEnv["LOGIN_AS"] = "{signin.email}"
 	return s
 }
 
@@ -415,15 +415,15 @@ func TestValidateSignIn(t *testing.T) {
 		t.Fatalf("valid sign-in refused: %v", err)
 	}
 	form := func(s *dexec.JobSpec) {
-		s.App.JobStackSignIn.Method, s.App.JobStackSignIn.HTTP = dexec.SignInForm, nil
-		s.App.JobStackSignIn.Form = &dexec.SignInFields{EmailSelector: "#email", PasswordSelector: "input[type=password]", SubmitSelector: "form button"}
+		s.Project.JobStackSignIn.Method, s.Project.JobStackSignIn.HTTP = dexec.SignInForm, nil
+		s.Project.JobStackSignIn.Form = &dexec.SignInFields{EmailSelector: "#email", PasswordSelector: "input[type=password]", SubmitSelector: "form button"}
 	}
 	ok := []func(*dexec.JobSpec){
 		form,
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.SuccessPath = "" },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.BodyTemplate = "" },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.Method = "PUT" },
-		func(s *dexec.JobSpec) { s.App.JobStack[0].Env["PW"] = "{signin.password}" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.SuccessPath = "" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.HTTP.BodyTemplate = "" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.HTTP.Method = "PUT" },
+		func(s *dexec.JobSpec) { s.Project.JobStack[0].Env["PW"] = "{signin.password}" },
 	}
 	for i, m := range ok {
 		s := signInSpec("bjob_si_ok")
@@ -433,37 +433,37 @@ func TestValidateSignIn(t *testing.T) {
 		}
 	}
 	bad := []func(*dexec.JobSpec){
-		func(s *dexec.JobSpec) { s.App.JobStack, s.App.PreviewEnv = nil, nil },
-		func(s *dexec.JobSpec) { s.App.PreviewCmd, s.App.PreviewURL = "", "" },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.URL = "login" },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.SuccessPath = "account" },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.Email = "" },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.Email = "a\nb@example.com" },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.Password = "short" },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.Password = strings.Repeat("p", 257) },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.Password = "pass\nword-long" },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.Method = "oauth" },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP = nil },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.Method = "GET" },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.Path = "api/login" },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.BodyTemplate = strings.Repeat("x", 2049) },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.BodyTemplate = `{"k":"{postgres.url}"}` },
-		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.BodyTemplate = `{"k":"{secret:KEY}"}` },
+		func(s *dexec.JobSpec) { s.Project.JobStack, s.Project.PreviewEnv = nil, nil },
+		func(s *dexec.JobSpec) { s.Project.PreviewCmd, s.Project.PreviewURL = "", "" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.URL = "login" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.SuccessPath = "account" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Email = "" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Email = "a\nb@example.com" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Password = "short" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Password = strings.Repeat("p", 257) },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Password = "pass\nword-long" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Method = "oauth" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.HTTP = nil },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.HTTP.Method = "GET" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.HTTP.Path = "api/login" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.HTTP.BodyTemplate = strings.Repeat("x", 2049) },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.HTTP.BodyTemplate = `{"k":"{postgres.url}"}` },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.HTTP.BodyTemplate = `{"k":"{secret:KEY}"}` },
 		func(s *dexec.JobSpec) {
 			form(s)
-			s.App.JobStackSignIn.HTTP = &dexec.SignInCall{Method: "POST", Path: "/x"}
+			s.Project.JobStackSignIn.HTTP = &dexec.SignInCall{Method: "POST", Path: "/x"}
 		},
 		func(s *dexec.JobSpec) {
 			form(s)
-			s.App.JobStackSignIn.Form.SubmitSelector = ""
+			s.Project.JobStackSignIn.Form.SubmitSelector = ""
 		},
 		func(s *dexec.JobSpec) {
 			form(s)
-			s.App.JobStackSignIn.Form.EmailSelector = strings.Repeat("a", 201)
+			s.Project.JobStackSignIn.Form.EmailSelector = strings.Repeat("a", 201)
 		},
 		func(s *dexec.JobSpec) {
-			s.App.JobStackSignIn = nil
-			s.App.PreviewEnv["LOGIN_AS"] = "{signin.email}"
+			s.Project.JobStackSignIn = nil
+			s.Project.PreviewEnv["LOGIN_AS"] = "{signin.email}"
 		},
 	}
 	for i, m := range bad {

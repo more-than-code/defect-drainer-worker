@@ -32,8 +32,8 @@ func checkGolden(t *testing.T, name string, got []byte) {
 
 func goldenBriefInput() BatchFixBriefInput {
 	return BatchFixBriefInput{
-		Batch:       Batch{ID: "BATCH-1", AppID: "app", Title: "Fix the header", Goal: "Header fits on phones"},
-		Defects:     []Defect{{ID: "DEF-1", AppID: "app", Title: "Header overflows", Severity: "major", Status: "open"}},
+		Batch:       Batch{ID: "BATCH-1", ProjectID: "app", Title: "Fix the header", Goal: "Header fits on phones"},
+		Defects:     []Defect{{ID: "DEF-1", ProjectID: "app", Title: "Header overflows", Severity: "major", Status: "open"}},
 		DefectsRoot: "/srv/dd/jobs/j1/evidence",
 		Worktrees:   []git.WorktreeBinding{{Repo: "web", WorktreeAbs: "/srv/dd/jobs/j1/handoff/worktrees/web", PrimaryAbs: "/srv/dd/repos/web", Branch: "dd/BATCH-1"}},
 	}

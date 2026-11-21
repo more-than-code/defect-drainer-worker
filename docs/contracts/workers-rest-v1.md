@@ -161,7 +161,7 @@ A refused PATCH changes nothing. PATCH stays admin/owner; POST as today.
     1. `update dd-worker (no browser.v1)`
     2. `no browser (policy)`
     3. `browser not ready` or `browser not ready: <tool reason>` (`missing` when the tool is absent)
-- **Spec (`JobSpec.App`):**
+- **Spec (`JobSpec.Project`; `JobSpec.App`, key `app`, before worker 0.2.0-rc7, see [`worker-protocol-v1.md`](worker-protocol-v1.md) §18):**
   - `browser` is true exactly when the job needs a browser;
   - `previewCmd`/`previewUrl` are sent only with `browser`;
   - `agentHosts` is sent whenever the app lists hosts.

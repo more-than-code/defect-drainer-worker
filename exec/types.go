@@ -10,7 +10,7 @@ import "time"
 // Defect mirrors store.DefectRecord: the defect text a brief is built from.
 type Defect struct {
 	ID           string   `json:"id"`
-	AppID        string   `json:"app_id"`
+	ProjectID    string   `json:"project_id"`
 	Title        string   `json:"title"`
 	Severity     string   `json:"severity"`
 	Status       string   `json:"status"`
@@ -39,7 +39,7 @@ type Defect struct {
 // Batch mirrors jobs.BatchRecord, the batch row a fix brief names.
 type Batch struct {
 	ID        string   `json:"id"`
-	AppID     string   `json:"app_id"`
+	ProjectID string   `json:"project_id"`
 	Title     string   `json:"title"`
 	Goal      string   `json:"goal"`
 	Status    string   `json:"status"`
@@ -67,7 +67,7 @@ type VerifyCommand struct {
 // TestRun is the part of store.TestRun a test job reads.
 type TestRun struct {
 	ID          string         `json:"id"`
-	AppID       string         `json:"app_id"`
+	ProjectID   string         `json:"project_id"`
 	PlanID      *string        `json:"plan_id"`
 	PlanVersion *int           `json:"plan_version"`
 	Title       string         `json:"title"`

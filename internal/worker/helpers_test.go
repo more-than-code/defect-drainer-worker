@@ -282,14 +282,14 @@ func claudeFixture(t *testing.T, name string) string {
 func fixSpec(jobID string) dexec.JobSpec {
 	now := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)
 	return dexec.JobSpec{
-		JobID: jobID, Kind: dexec.KindBatchFix, AppID: "app1", Label: "BATCH-20261115-w2a", BatchID: "BATCH-20261115-w2a",
+		JobID: jobID, Kind: dexec.KindBatchFix, ProjectID: "app1", Label: "BATCH-20261115-w2a", BatchID: "BATCH-20261115-w2a",
 		Mode: dexec.ModeFresh, DefectIDs: []string{testDefect}, HarvestIDs: []string{testDefect},
 		CreatedAt: now, RunStartedAt: now,
 		Worktrees: []git.WorktreeBinding{{Repo: "app", Branch: "dd/" + jobID + "/app", RepoURL: testRepo, BaseSource: "origin", BaseBranch: "main"}},
-		App:       dexec.AppSettings{Sandbox: "strict", RepoEntries: []dexec.RepoEntry{{Name: "app", URL: testRepo, BaseSource: "origin", BaseBranch: "main"}}},
+		Project:   dexec.ProjectSettings{Sandbox: "strict", RepoEntries: []dexec.RepoEntry{{Name: "app", URL: testRepo, BaseSource: "origin", BaseBranch: "main"}}},
 		Fix: &dexec.FixSpec{
-			Batch:   dexec.Batch{ID: "BATCH-20261115-w2a", AppID: "app1", Title: "t", DefectIDs: []string{testDefect}},
-			Defects: []dexec.Defect{{ID: testDefect, AppID: "app1", Title: "Button broken", Body: "## Acceptance\n- [ ] works\n"}},
+			Batch:   dexec.Batch{ID: "BATCH-20261115-w2a", ProjectID: "app1", Title: "t", DefectIDs: []string{testDefect}},
+			Defects: []dexec.Defect{{ID: testDefect, ProjectID: "app1", Title: "Button broken", Body: "## Acceptance\n- [ ] works\n"}},
 		},
 		Caps: dexec.Caps{AgentMaxIters: 2, AgentMaxWallSec: 120, ReviewOff: true},
 	}

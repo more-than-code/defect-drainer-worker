@@ -159,11 +159,11 @@ func TestPolicyDeclines(t *testing.T) {
 	}{
 		{"repo outside policy", func(s *dexec.JobSpec) { s.Worktrees[0].RepoURL = "https://git.test/other/app" }, workerproto.DeclinePolicyDenied},
 		{"ext:: repo", func(s *dexec.JobSpec) { s.Worktrees[0].RepoURL = "ext::sh -c id" }, workerproto.DeclinePolicyDenied},
-		{"repo entry with userinfo", func(s *dexec.JobSpec) { s.App.RepoEntries[0].URL = "https://u:p@git.test/acme/app" }, workerproto.DeclinePolicyDenied},
+		{"repo entry with userinfo", func(s *dexec.JobSpec) { s.Project.RepoEntries[0].URL = "https://u:p@git.test/acme/app" }, workerproto.DeclinePolicyDenied},
 		{"adapter not allowed", func(s *dexec.JobSpec) { s.Adapter = "grok" }, workerproto.DeclinePolicyDenied},
 		{"model with a dash", func(s *dexec.JobSpec) { s.Model = "-rf" }, workerproto.DeclineBadSpec},
 		{"local base", func(s *dexec.JobSpec) { s.Worktrees[0].BaseSource = "local" }, workerproto.DeclineBadSpec},
-		{"local repo entry", func(s *dexec.JobSpec) { s.App.RepoEntries[0].BaseSource = "local" }, workerproto.DeclineBadSpec},
+		{"local repo entry", func(s *dexec.JobSpec) { s.Project.RepoEntries[0].BaseSource = "local" }, workerproto.DeclineBadSpec},
 		{"traversal repo", func(s *dexec.JobSpec) { s.Worktrees[0].Repo = "../etc" }, workerproto.DeclineBadSpec},
 		{"absolute evidence", func(s *dexec.JobSpec) {
 			s.Fix.Evidence = []dexec.EvidenceRef{{Path: "/etc/passwd", SHA256: strings.Repeat("a", 64)}}
@@ -236,10 +236,10 @@ func TestPolicyNarrowing(t *testing.T) {
 		"min_sandbox = \"strict\"\nmax_turns = 50\nmax_wall_sec = 600\n"
 	h := newHarness(t, harnessOpts{policy: pol})
 	spec := fixSpec("bjob_narrow")
-	spec.App.Sandbox = "workspace"
-	spec.App.MaxTurns = 500
+	spec.Project.Sandbox = "workspace"
+	spec.Project.MaxTurns = 500
 	spec.Caps.AgentMaxWallSec = 99999
-	spec.App.VerifyCommands = []dexec.VerifyCommand{{Repo: "app", Command: "touch /tmp/should-not-run-" + spec.JobID}}
+	spec.Project.VerifyCommands = []dexec.VerifyCommand{{Repo: "app", Command: "touch /tmp/should-not-run-" + spec.JobID}}
 	h.offerJob(spec, nil)
 	d := h.waitDone(spec.JobID, 60*time.Second)
 	log := joinLines(h.fs.jobEvents(spec.JobID))
@@ -265,7 +265,7 @@ func TestPolicyNarrowing(t *testing.T) {
 		t.Fatal("a verify command ran")
 	}
 	meta, _ := readMeta(h.paths.JobMeta(spec.JobID))
-	if meta.Spec.Caps.AgentMaxWallSec != 600 || meta.Spec.App.Sandbox != "strict" {
+	if meta.Spec.Caps.AgentMaxWallSec != 600 || meta.Spec.Project.Sandbox != "strict" {
 		t.Fatalf("stored spec %+v", meta.Spec.Caps)
 	}
 }

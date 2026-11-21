@@ -3,7 +3,7 @@ package workerproto
 // Worker browser (docs/worker-browser.md in the control plane, decisions
 // B1–B8): after-fix screenshots on a worker. Additive to v1.
 
-// CapBrowserV1: the worker understands JobSpec.App.browser, previewCmd,
+// CapBrowserV1: the worker understands JobSpec.Project.browser, previewCmd,
 // previewUrl and agentHosts. Whether its browser is ready is the "browser"
 // tool's readiness, not this capability.
 const CapBrowserV1 = "browser.v1"
