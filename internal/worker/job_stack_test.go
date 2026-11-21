@@ -396,3 +396,164 @@ func TestNoStackJobUnchanged(t *testing.T) {
 		t.Fatalf("no-services job changed:\n%s", brief)
 	}
 }
+
+const testSignInPassword = "seed-Pass!word1"
+
+// signInSpec is stackSpec with an HTTP Stack sign-in.
+func signInSpec(jobID string) dexec.JobSpec {
+	s := stackSpec(jobID)
+	s.App.JobStackSignIn = &dexec.StackSignIn{URL: "/login", Email: "seed@example.com", Password: testSignInPassword, Method: dexec.SignInHTTP,
+		HTTP:        &dexec.SignInCall{Method: "POST", Path: "/api/login", BodyTemplate: `{"email":"{signin.email}","password":"{signin.password}","api":"{services.api.url}"}`},
+		SuccessPath: "/account"}
+	s.App.PreviewEnv["LOGIN_AS"] = "{signin.email}"
+	return s
+}
+
+// S10: the bad_spec checks of the Stack sign-in.
+func TestValidateSignIn(t *testing.T) {
+	if err := validateSpec(signInSpec("bjob_si_ok")); err != nil {
+		t.Fatalf("valid sign-in refused: %v", err)
+	}
+	form := func(s *dexec.JobSpec) {
+		s.App.JobStackSignIn.Method, s.App.JobStackSignIn.HTTP = dexec.SignInForm, nil
+		s.App.JobStackSignIn.Form = &dexec.SignInFields{EmailSelector: "#email", PasswordSelector: "input[type=password]", SubmitSelector: "form button"}
+	}
+	ok := []func(*dexec.JobSpec){
+		form,
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.SuccessPath = "" },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.BodyTemplate = "" },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.Method = "PUT" },
+		func(s *dexec.JobSpec) { s.App.JobStack[0].Env["PW"] = "{signin.password}" },
+	}
+	for i, m := range ok {
+		s := signInSpec("bjob_si_ok")
+		m(&s)
+		if err := validateSpec(s); err != nil {
+			t.Errorf("ok %d refused: %v", i, err)
+		}
+	}
+	bad := []func(*dexec.JobSpec){
+		func(s *dexec.JobSpec) { s.App.JobStack, s.App.PreviewEnv = nil, nil },
+		func(s *dexec.JobSpec) { s.App.PreviewCmd, s.App.PreviewURL = "", "" },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.URL = "login" },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.SuccessPath = "account" },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.Email = "" },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.Email = "a\nb@example.com" },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.Password = "short" },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.Password = strings.Repeat("p", 257) },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.Password = "pass\nword-long" },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.Method = "oauth" },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP = nil },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.Method = "GET" },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.Path = "api/login" },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.BodyTemplate = strings.Repeat("x", 2049) },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.BodyTemplate = `{"k":"{postgres.url}"}` },
+		func(s *dexec.JobSpec) { s.App.JobStackSignIn.HTTP.BodyTemplate = `{"k":"{secret:KEY}"}` },
+		func(s *dexec.JobSpec) {
+			form(s)
+			s.App.JobStackSignIn.HTTP = &dexec.SignInCall{Method: "POST", Path: "/x"}
+		},
+		func(s *dexec.JobSpec) {
+			form(s)
+			s.App.JobStackSignIn.Form.SubmitSelector = ""
+		},
+		func(s *dexec.JobSpec) {
+			form(s)
+			s.App.JobStackSignIn.Form.EmailSelector = strings.Repeat("a", 201)
+		},
+		func(s *dexec.JobSpec) {
+			s.App.JobStackSignIn = nil
+			s.App.PreviewEnv["LOGIN_AS"] = "{signin.email}"
+		},
+	}
+	for i, m := range bad {
+		s := signInSpec("bjob_si_bad")
+		m(&s)
+		if err := validateSpec(s); err == nil {
+			t.Errorf("bad %d accepted", i)
+		}
+	}
+}
+
+// S10 through the real worker loop: the sign-in reaches dd-stack (env),
+// dd-shot (the dd-worker line) and its sign-in file (the body rendered);
+// the brief names the email, never the password. An agent that writes the
+// password into the code and its notes: no event or blob shows it, the
+// diff check flags it, nothing resolves, the diff view hides it and ship
+// refuses.
+func TestSignInJobEndToEnd(t *testing.T) {
+	browser := fakeBrowser(t, t.TempDir())
+	pg := fakePostgres(t)
+	agent := "echo 'password " + testSignInPassword + "' >> ../worktrees/app/README.md\n" +
+		"echo 'tried " + testSignInPassword + "' >&2\n" + fixArtifacts(testDefect) +
+		"printf 'signed in with " + testSignInPassword + "' > fix-notes/" + testDefect + ".md\n" +
+		"cat '" + claudeFixture(t, "c1-basic") + "'\nexit 0\n"
+	h := newHarness(t, harnessOpts{agent: agent,
+		policy: defaultPolicy + "agent_browser = \"" + browser + "\"\nagent_postgres = \"" + pg + "\"\n"})
+	root, _ := scanRoot(t)
+	readyBrowser(h, root, true)
+	setPostgresTool(h, true)
+	spec := signInSpec("bjob_si_e2e")
+	h.offerJob(spec, nil)
+	h.waitDone(spec.JobID, 60*time.Second)
+	handoff := h.paths.Handoff(spec.JobID)
+
+	stack, _ := os.ReadFile(filepath.Join(handoff, dexec.DDStackName))
+	for _, want := range []string{"export DD_SIGNIN_URL='http://127.0.0.1:5173/login'", "export DD_SIGNIN_EMAIL='seed@example.com'",
+		"export DD_SIGNIN_PASSWORD='" + testSignInPassword + "'", "export LOGIN_AS='seed@example.com'"} {
+		if !strings.Contains(string(stack), want) {
+			t.Fatalf("dd-stack lacks %q", want)
+		}
+	}
+	shot, _ := os.ReadFile(filepath.Join(handoff, dexec.DDShotName))
+	if !strings.Contains(string(shot), "dd_worker='"+shotBin()+"' # dd-signin") {
+		t.Fatal("dd-shot lacks the dd-worker line")
+	}
+	fi, err := os.Stat(filepath.Join(handoff, dexec.ShotSignInName))
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("sign-in file: %v %v", err, fi)
+	}
+	si, err := dexec.ReadShotSignIn(filepath.Join(handoff, dexec.ShotSignInName))
+	if err != nil || si.URL != "http://127.0.0.1:5173/login" || si.HTTPURL != "http://127.0.0.1:5173/api/login" || si.SuccessURL != "http://127.0.0.1:5173/account" ||
+		si.HTTPBody != `{"email":"seed@example.com","password":"`+testSignInPassword+`","api":"http://127.0.0.1:3000"}` {
+		t.Fatalf("sign-in file %+v %v", si, err)
+	}
+	brief, _ := os.ReadFile(filepath.Join(handoff, "BRIEF.md"))
+	if !strings.Contains(string(brief), "test user is `seed@example.com`") || strings.Contains(string(brief), testSignInPassword) {
+		t.Fatalf("BRIEF.md:\n%s", brief)
+	}
+
+	h.fs.mu.Lock()
+	j := h.fs.jobs[spec.JobID]
+	raw, _ := json.Marshal(j.events)
+	var blobs []byte
+	for _, b := range j.blobs {
+		blobs = append(blobs, b...)
+	}
+	h.fs.mu.Unlock()
+	if strings.Contains(string(raw)+string(blobs), testSignInPassword) {
+		t.Fatal("an event or blob shows the password")
+	}
+	if !strings.Contains(string(raw), "tried [redacted]") || !strings.Contains(string(raw), `"stackSecret":true`) ||
+		!strings.Contains(string(raw), "the diff holds a job stack secret") {
+		t.Fatalf("events:\n%s", raw)
+	}
+	for _, e := range h.fs.jobEvents(spec.JobID) {
+		if e.Harvest != nil && e.Harvest.AllowResolve {
+			t.Fatal("a run whose diff holds the password may resolve")
+		}
+	}
+	if log, _ := os.ReadFile(filepath.Join(handoff, "agent.log")); strings.Contains(string(log), testSignInPassword) {
+		t.Fatal("agent.log shows the password")
+	}
+
+	r := h.controlAndWait(spec.JobID, "rq_si_diff", dexec.Control{Kind: dexec.ControlDiff, Repo: "app"}, 1)
+	var diff workerproto.DiffResult
+	if !r.OK || json.Unmarshal(r.Result, &diff) != nil || strings.Contains(diff.Diff, testSignInPassword) || !strings.Contains(diff.Diff, "password [redacted]") {
+		t.Fatalf("diff %+v %q", r, diff.Diff)
+	}
+	ship := dexec.Control{Kind: dexec.ControlShip, Repos: []dexec.ShipRepo{{Repo: "app", Files: []string{"README.md"}, Message: "Fix", Title: "Fix"}}}
+	if r = h.controlAndWait(spec.JobID, "rq_si_ship", ship, 1); r.OK || r.Code != workerproto.ReasonPolicyDenied || !strings.Contains(r.Detail, "Stack sign-in password") {
+		t.Fatalf("ship %+v", r)
+	}
+}

@@ -560,12 +560,15 @@ Additive (the control plane's job-stack spec, decisions S1–S9). An app defines
 | Field | Rule |
 |---|---|
 | `jobStack` | At most 4, in start order. Each: `name` `[a-z][a-z0-9-]{0,31}`, unique; `repo` one of the job's `worktrees[].repo`; `install`, `migrate` (optional), `seed` (at most 4, none blank) and `start` (required), each one line of at most 500 bytes; `port` 1024–65535, unique, not the `previewUrl` port; `health` a path starting with `/` (`[A-Za-z0-9/._~%?=&-]`, at most 200 bytes); `env` (below); `needsPostgres`. |
-| `env`, `previewEnv` | At most 32 entries. Names pass `ValidEnvName`; values are one line of at most 1024 bytes. Any `{token}` of letters, digits and `._:-` must be `{random}`, `{services.<name>.url}` of a listed service, or `{postgres.url}` when a service has `needsPostgres`; anything else, such as `{secret:NAME}`, is refused. |
+| `env`, `previewEnv` | At most 32 entries. Names pass `ValidEnvName`; values are one line of at most 1024 bytes. Any `{token}` of letters, digits and `._:-` must be `{random}`, `{services.<name>.url}` of a listed service, `{postgres.url}` when a service has `needsPostgres`, or `{signin.url}`, `{signin.email}`, `{signin.password}` with a `jobStackSignIn`; anything else, such as `{secret:NAME}`, is refused. |
 | `previewTimeoutSec` | 0 (meaning 90) or 30–300. The whole stack's bound and `dd-shot`'s wait for the preview URL. |
+| `jobStackSignIn` | Optional Stack sign-in (S10): `{url, email, password, method, form, http, successPath}`. Needs `jobStack` and `previewUrl`. `url` and `successPath` follow the `health` path rule. `email`: one line, 1–254 bytes. `password`: one line, 8–256 bytes (the app's seed user, never a real credential). `method` `"form"` needs `form: {emailSelector, passwordSelector, submitSelector}` (CSS, one line, at most 200 bytes each) and no `http`; `"http"` needs `http: {method, path, bodyTemplate}` (`POST`, `PUT` or `PATCH`; `path` as `url`; a JSON body of at most 2048 bytes using `{random}`, `{services.<name>.url}` and `{signin.*}` only) and no `form`. |
 
 `previewEnv` and `previewTimeoutSec` are checked without services too, and then ignored: a job without services runs as before, `dd-shot` byte for byte.
 
-**Placeholders.** `{services.<name>.url}` is `http://127.0.0.1:<port>`. `{postgres.url}` is `postgresql://postgres@127.0.0.1:<port>/postgres` on a free loopback port. `{random}` is 32 random bytes in hex, one value per job run, the same in every entry, so a service and the preview can share it. The worker removes that value from every event it sends (log lines, notes, diff hygiene, review and verification text) and from `agent.log`, as `[redacted]`.
+**Placeholders.** `{services.<name>.url}` is `http://127.0.0.1:<port>`. `{postgres.url}` is `postgresql://postgres@127.0.0.1:<port>/postgres` on a free loopback port. `{random}` is 32 random bytes in hex, one value per job run, the same in every entry, so a service and the preview can share it. `{signin.url}` is the app URL's origin plus `jobStackSignIn.url`; `{signin.email}` and `{signin.password}` are the seed user's. The worker removes the `{random}` value and the sign-in password from every event it sends (log lines, notes, diff hygiene, review and verification text) and from `agent.log`, as `[redacted]`, and from the `diff` control's result.
+
+**Diff check** (S10). After the agent, a worktree diff (added lines, or an untracked file) that holds the password or the `{random}` value sets `diffHygiene.stackSecret: true` with a job-log warning, and the run's `harvest.allowResolve` is false. A `ship` control whose diff adds the password is refused `policy_denied`. A value already at the base (an app's own seed file) doesn't count.
 
 **`dd-stack`** (in the handoff next to `dd-shot`; POSIX sh): `sh dd-stack run -- <cmd> [<arg>…]`, in one sandboxed call.
 1. If a service needs Postgres: `initdb` in a fresh directory under `$TMPDIR`, trust auth, then `pg_ctl start` on a random loopback port (no unix socket).
@@ -573,8 +576,17 @@ Additive (the control plane's job-stack spec, decisions S1–S9). An app defines
 3. `<cmd>` runs with `previewEnv`, not the services' env.
 4. Everything stops on any exit, Postgres included, and the temp directory is removed.
 
+With a `jobStackSignIn` it also exports `DD_SIGNIN_URL`, `DD_SIGNIN_EMAIL` and `DD_SIGNIN_PASSWORD` to every service step and to `<cmd>`.
+
 It prints only these lines, never an env value: `DD-STACK UP postgres 127.0.0.1:<port>`, `DD-STACK OK <service> <step> <secs>s`, `DD-STACK UP <service> http://127.0.0.1:<port>`, `DD-STACK RUN`, `DD-STACK FAIL <service> <step> log=.dd-stack/<file>` followed by that log's last 20 lines, and `DD-STACK DOWN`. Steps are `install`, `migrate`, `seed-<n>`, `start`, `health` (and `initdb`, `start` for `postgres`). Exit: `<cmd>`'s status once the stack is up, 125 when the stack failed, 2 on bad arguments. Logs stay in `.dd-stack/` in the handoff.
 
 **`dd-shot`** with services: the preview runs as `dd-stack run -- sh -c <previewCmd>`, and `dd-shot` waits `previewTimeoutSec` for the URL instead of 90 s. A failed stack prints `DD-SHOT FAIL <DEF-id> stack <service> <step> log=.dd-stack/<file>` and that log's last 20 lines. Arguments, output and exit codes are otherwise §15's.
 
-**Brief.** A `## Stack` section lists each service's name, repo, steps, URL and health path, and Postgres when used (never an env value), with how to run `dd-stack` and the rule that setup files never go in a worktree.
+**Stack sign-in in `dd-shot`** (S10). Once the app answers, `dd-shot` runs the worker's own binary, `dd-worker shot` (a DevTools-protocol client built into the worker; nothing is installed at run time), with the sign-in rendered into `dd-shot-signin.json` (mode 0600) in the handoff. It starts the host browser headless with a DevTools port on loopback, then:
+- **form:** opens `{signin.url}`, waits up to 15 s for the three selectors, sets the email and password the way typing would (the native value setter, then `input` and `change` events), clicks submit and waits up to 15 s to leave the sign-in page;
+- **http:** opens `{signin.url}` and calls `fetch(path, {method, body, credentials: "include"})` from that page, so the session cookie lands in the browser; it needs a 2xx;
+- **success check,** when `successPath` is set: the path must load as itself (not redirected) with a status below 400.
+
+It prints `DD-SHOT SIGNIN OK <form|http>`, then takes each screenshot at 1280×800 after the page's network settles, with §15's lines. A failed sign-in prints `DD-SHOT FAIL <DEF-id> signin <reason>` (`no-field <email|password|submit>`, `still-on-signin`, `http <status>`, `redirected <path>`, `open …`, `browser …`), takes no screenshot and exits 1. Neither prints a credential.
+
+**Brief.** A `## Stack` section lists each service's name, repo, steps, URL and health path, and Postgres when used (never an env value), with how to run `dd-stack` and the rule that setup files never go in a worktree. With a Stack sign-in it names the test user's email and the `DD_SIGNIN_*` env, never the password, and the Screenshots section says `dd-shot` signs in first.

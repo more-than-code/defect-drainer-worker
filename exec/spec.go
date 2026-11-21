@@ -144,6 +144,9 @@ type AppSettings struct {
 	JobStack          []JobStackService `json:"jobStack,omitempty"`
 	PreviewEnv        map[string]string `json:"previewEnv,omitempty"`
 	PreviewTimeoutSec int               `json:"previewTimeoutSec,omitempty"`
+	// JobStackSignIn (S10) signs dd-shot's browser in as the stack's seed
+	// user before its screenshots. It needs JobStack and PreviewURL.
+	JobStackSignIn *StackSignIn `json:"jobStackSignIn,omitempty"`
 }
 
 // VerifySkippedHostPolicy is VerifySkipped when a worker's policy has

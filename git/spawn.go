@@ -324,6 +324,9 @@ type CodingAgentOpts struct {
 	// Secret is redacted from agent.log. It is never written anywhere else
 	// by this function. Empty disables the redactor.
 	Secret string
+	// ExtraSecrets are also redacted from agent.log (a job stack's {random}
+	// value and sign-in password). Its caller redacts the job-log lines.
+	ExtraSecrets []string
 	// StripEnv are host environment names removed before ExtraEnv is applied.
 	// DD_TEST_ACCOUNT_PASSWORD is always removed from the inherited environment.
 	StripEnv []string
@@ -906,7 +909,8 @@ func StartCodingAgent(handoffAbs, batchID, defectsRoot string, worktrees []Workt
 		stream.onMaxTurns = opts.OnMaxTurns
 	}
 	logf, err := os.OpenFile(handoffAbs+"/agent.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	var stdoutRed, stderrRed *redactWriter
+	// reds are the agent.log redactors, innermost first.
+	var reds []*redactWriter
 	if err == nil {
 		var start int64
 		if st, serr := logf.Stat(); serr == nil {
@@ -918,11 +922,17 @@ func StartCodingAgent(handoffAbs, batchID, defectsRoot string, worktrees []Workt
 		// its own so a secret split across two writes of that stream is caught.
 		var rawOut io.Writer = tee
 		var rawErr io.Writer = tee
-		if opts != nil && opts.Secret != "" {
-			stdoutRed = newRedactWriter(tee, opts.Secret)
-			stderrRed = newRedactWriter(tee, opts.Secret)
-			rawOut = stdoutRed
-			rawErr = stderrRed
+		var secrets []string
+		if opts != nil {
+			secrets = append([]string{opts.Secret}, opts.ExtraSecrets...)
+		}
+		for _, sec := range secrets {
+			if sec == "" {
+				continue
+			}
+			o, e := newRedactWriter(rawOut, sec), newRedactWriter(rawErr, sec)
+			reds = append(reds, o, e)
+			rawOut, rawErr = o, e
 		}
 		stream.raw = rawOut
 		cmd.Stdout = stream
@@ -936,11 +946,9 @@ func StartCodingAgent(handoffAbs, batchID, defectsRoot string, worktrees []Workt
 	flushKeys := redactCredential(cmd, task.Credential.Key)
 	flush := func() {
 		flushKeys()
-		if stdoutRed != nil {
-			_ = stdoutRed.Flush()
-		}
-		if stderrRed != nil {
-			_ = stderrRed.Flush()
+		// Outermost first, so each held tail still passes the inner ones.
+		for i := len(reds) - 1; i >= 0; i-- {
+			_ = reds[i].Flush()
 		}
 		stream.Flush()
 		outFwd.Flush()

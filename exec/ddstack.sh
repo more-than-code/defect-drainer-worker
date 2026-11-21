@@ -23,8 +23,9 @@
 # bad arguments. Every step's output is kept in .dd-stack/ in the handoff.
 
 # The functions below run from traps and from the definition dd_config
-# brings in, which shellcheck cannot see.
-# shellcheck disable=SC2317
+# brings in, which shellcheck cannot see (SC2317). That definition's values
+# may hold quotes meant literally, never re-parsed (SC2089, SC2090).
+# shellcheck disable=SC2317,SC2089,SC2090
 dd_pg_bin=''
 dd_timeout=90
 dd_n=0

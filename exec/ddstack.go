@@ -24,6 +24,9 @@ const DDStackName = "dd-stack"
 // DDStack is what dd-stack needs: the app's services and preview env, the
 // worktree of each repo, the policy's Postgres binaries ("" when no service
 // needs Postgres), the preview timeout and the job run's {random} value.
+// SignIn holds the {signin.*} values (AppSettings.SignInValues) when the
+// app has a Stack sign-in; dd-stack then also exports them as
+// DD_SIGNIN_URL, DD_SIGNIN_EMAIL and DD_SIGNIN_PASSWORD (S10).
 type DDStack struct {
 	Services   []JobStackService
 	PreviewEnv map[string]string
@@ -31,6 +34,14 @@ type DDStack struct {
 	Postgres   string
 	TimeoutSec int
 	Random     string
+	SignIn     map[string]string
+}
+
+// signInEnv names the env a Stack sign-in exports, by placeholder.
+var signInEnv = [][2]string{
+	{"DD_SIGNIN_URL", PlaceholderSignInURL},
+	{"DD_SIGNIN_EMAIL", PlaceholderSignInEmail},
+	{"DD_SIGNIN_PASSWORD", PlaceholderSignInPassword},
 }
 
 // NewStackRandom is a {random} value: 32 random bytes, hex (S3). One value
@@ -78,10 +89,7 @@ func stackConfig(c DDStack) (string, error) {
 	}
 	fmt.Fprintf(&b, "dd_config() {\n\tdd_pg_bin=%s\n\tdd_timeout=%d\n\tdd_n=%d\n\tdd_ports=%s\n}\n",
 		shQuote(pg), c.TimeoutSec, len(c.Services), shQuote(strings.Join(ports, " ")))
-	urls := map[string]string{}
-	for _, s := range c.Services {
-		urls[s.Name] = ServiceURL(s.Port)
-	}
+	vals := c.placeholderValues()
 	for i, s := range c.Services {
 		n := i + 1
 		dir, ok := c.Dirs[s.Repo]
@@ -101,44 +109,65 @@ func stackConfig(c DDStack) (string, error) {
 			fmt.Fprintf(&b, "\tdd_step seed-%d %s\n", j+1, shQuote(seed))
 		}
 		b.WriteString("}\n")
-		writeEnvFunc(&b, fmt.Sprintf("env_%d", n), s.Env, urls, c.Random)
+		writeEnvFunc(&b, fmt.Sprintf("env_%d", n), s.Env, vals, c.SignIn != nil)
 	}
-	writeEnvFunc(&b, "env_preview", c.PreviewEnv, urls, c.Random)
+	writeEnvFunc(&b, "env_preview", c.PreviewEnv, vals, c.SignIn != nil)
 	return b.String(), nil
 }
 
-// writeEnvFunc writes a function that exports env, names sorted, values
-// with {random} and {services.<name>.url} filled and {postgres.url} left to
-// the shell.
-func writeEnvFunc(b *strings.Builder, name string, env map[string]string, urls map[string]string, random string) {
+// placeholderValues maps every placeholder known when dd-stack is written:
+// {random}, each {services.<name>.url} and the {signin.*} values.
+func (c DDStack) placeholderValues() map[string]string {
+	vals := map[string]string{PlaceholderRandom: c.Random}
+	for _, s := range c.Services {
+		vals["{services."+s.Name+".url}"] = ServiceURL(s.Port)
+	}
+	for k, v := range c.SignIn {
+		vals[k] = v
+	}
+	return vals
+}
+
+// writeEnvFunc writes a function that exports the DD_SIGNIN_* env when
+// signIn, then env, names sorted, with the placeholders in vals filled and
+// {postgres.url} left to the shell.
+func writeEnvFunc(b *strings.Builder, name string, env map[string]string, vals map[string]string, signIn bool) {
 	fmt.Fprintf(b, "%s() {\n\t:\n", name)
+	if signIn {
+		for _, e := range signInEnv {
+			fmt.Fprintf(b, "\texport %s=%s\n", e[0], shQuote(vals[e[1]]))
+		}
+	}
 	keys := make([]string, 0, len(env))
 	for k := range env {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
 	for _, k := range keys {
-		fmt.Fprintf(b, "\texport %s=%s\n", k, stackValue(env[k], urls, random))
+		fmt.Fprintf(b, "\texport %s=%s\n", k, stackValue(env[k], vals))
 	}
 	b.WriteString("}\n")
 }
 
 // stackValue is one env value as sh source: single-quoted text joined with
 // "$dd_pg_url" where {postgres.url} was.
-func stackValue(v string, urls map[string]string, random string) string {
-	v = placeholderRe.ReplaceAllStringFunc(v, func(tok string) string {
-		if tok == PlaceholderRandom {
-			return random
-		}
-		if u, ok := urls[ServicePlaceholder(tok)]; ok {
-			return u
-		}
-		return tok
-	})
+func stackValue(v string, vals map[string]string) string {
+	v = fillPlaceholders(v, vals, func(s string) string { return s })
 	parts := strings.Split(v, PlaceholderPostgres)
 	out := make([]string, len(parts))
 	for i, p := range parts {
 		out[i] = shQuote(p)
 	}
 	return strings.Join(out, `"$dd_pg_url"`)
+}
+
+// fillPlaceholders replaces each placeholder in v found in vals with
+// enc(value), leaving the others ({postgres.url}) as they are.
+func fillPlaceholders(v string, vals map[string]string, enc func(string) string) string {
+	return placeholderRe.ReplaceAllStringFunc(v, func(tok string) string {
+		if val, ok := vals[tok]; ok {
+			return enc(val)
+		}
+		return tok
+	})
 }

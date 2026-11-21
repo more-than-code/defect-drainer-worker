@@ -19,8 +19,12 @@ var ddShotScript string
 // DDShotName is the helper's file name in the handoff.
 const DDShotName = "dd-shot"
 
-// stackMarker ends every line of dd-shot's job-stack variant.
-const stackMarker = " # dd-stack"
+// stackMarker ends every line of dd-shot's job-stack variant, and
+// signInMarker every line of its Stack sign-in variant.
+const (
+	stackMarker  = " # dd-stack"
+	signInMarker = " # dd-signin"
+)
 
 // DDShot is what dd-shot needs: the host browser (policy agent_browser), the
 // worktree the preview runs in, and the app's preview command and URL.
@@ -33,13 +37,24 @@ type DDShot struct {
 	PreviewURL string
 	Stack      bool
 	TimeoutSec int
+	// Worker, set only with a Stack sign-in (S10), is the dd-worker binary
+	// whose `shot` subcommand signs in and takes the screenshots, reading
+	// ShotSignInName next to dd-shot.
+	Worker string
 }
 
 // WriteDDShot writes dd-shot into handoff with c's values baked in, so it
 // works even where the env does not reach the agent's shell. None is a
 // secret: the agent can read every one of them anyway.
 func WriteDDShot(handoff string, c DDShot) error {
-	body := stackLines(ddShotScript, c.Stack)
+	body := markedLines(markedLines(ddShotScript, stackMarker, c.Stack), signInMarker, c.Worker != "")
+	if c.Worker != "" {
+		line := "dd_worker=''" + signInMarker + "\n"
+		if !c.Stack || strings.Count(body, line) != 1 {
+			return fmt.Errorf("dd-shot: a sign-in needs the job stack (template line %q)", line)
+		}
+		body = strings.Replace(body, line, "dd_worker="+shQuote(c.Worker)+signInMarker+"\n", 1)
+	}
 	if c.Stack {
 		line := "dd_wait=''" + stackMarker + "\n"
 		if strings.Count(body, line) != 1 {
@@ -59,16 +74,16 @@ func WriteDDShot(handoff string, c DDShot) error {
 	return os.WriteFile(filepath.Join(handoff, DDShotName), []byte(body), 0o755)
 }
 
-// stackLines keeps the lines ending in stackMarker when stack, and drops
-// them otherwise.
-func stackLines(script string, stack bool) string {
-	if stack {
+// markedLines keeps the lines ending in marker when keep, and drops them
+// otherwise.
+func markedLines(script, marker string, keep bool) string {
+	if keep {
 		return script
 	}
 	lines := strings.SplitAfter(script, "\n")
 	kept := lines[:0]
 	for _, l := range lines {
-		if !strings.HasSuffix(strings.TrimSuffix(l, "\n"), stackMarker) {
+		if !strings.HasSuffix(strings.TrimSuffix(l, "\n"), marker) {
 			kept = append(kept, l)
 		}
 	}

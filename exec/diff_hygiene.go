@@ -3,7 +3,9 @@ package exec
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/more-than-code/defect-drainer-worker/git"
@@ -39,6 +41,10 @@ type RepoDiffHygiene struct {
 type DiffHygieneReport struct {
 	Repos []RepoDiffHygiene `json:"repos"`
 	Noisy bool              `json:"noisy"`
+	// StackSecret says the diff adds a job stack secret: the Stack sign-in
+	// password or the run's {random} value (S10). Such a run resolves
+	// nothing, and the worker refuses to ship the password.
+	StackSecret bool `json:"stackSecret,omitempty"`
 }
 
 const (
@@ -297,4 +303,45 @@ func MeasureDiffHygiene(worktrees []git.WorktreeBinding, baseByRepo map[string]s
 		}
 	}
 	return DiffHygieneReport{Repos: repos, Noisy: noisy}
+}
+
+// DiffAddsSecret reports whether the worktree's changes since base add any
+// of values: an added line of the tracked diff, or an untracked file that
+// ship could commit. A value already at base doesn't count (an app's own
+// seed file may hold its seed user's password).
+func DiffAddsSecret(b git.WorktreeBinding, base string, values []string) (bool, error) {
+	if base == "" || strings.HasPrefix(base, "-") {
+		return false, fmt.Errorf("invalid diff base")
+	}
+	diff, err := WorktreeGit(b, "diff", "--no-ext-diff", "--no-textconv", "--unified=0", base, "--")
+	if err != nil {
+		return false, err
+	}
+	has := func(s string) bool {
+		for _, v := range values {
+			if v != "" && strings.Contains(s, v) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, l := range strings.Split(diff, "\n") {
+		if strings.HasPrefix(l, "+") && !strings.HasPrefix(l, "+++") && has(l) {
+			return true, nil
+		}
+	}
+	untracked, err := WorktreeGit(b, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return false, err
+	}
+	for _, f := range strings.Split(untracked, "\x00") {
+		if f == "" {
+			continue
+		}
+		data, tooLarge, ok := ReadRegularFile(b.WorktreeAbs, filepath.Join(b.WorktreeAbs, f), time.Time{})
+		if tooLarge || (ok && has(string(data))) {
+			return true, nil // too large to check is refused too
+		}
+	}
+	return false, nil
 }

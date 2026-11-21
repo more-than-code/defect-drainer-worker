@@ -66,6 +66,9 @@ type Host struct {
 	// Postgres is policy agent_postgres when the job's stack needs
 	// Postgres (job stack S2, S8); "" otherwise.
 	Postgres string
+	// ShotBin is the dd-worker binary dd-shot runs as `dd-worker shot` for
+	// a Stack sign-in (S10); "" in local serve.
+	ShotBin string
 }
 
 // AgentAdapter is the host's adapter.

@@ -20,12 +20,17 @@
 # stack is reported as: DD-SHOT FAIL <DEF-id> stack <service> <step> log=<file> # dd-stack
 # (then the log's last 20 lines). Lines ending in "# dd-stack" are written # dd-stack
 # only for an app with a job stack. # dd-stack
+# With a Stack sign-in, dd-worker shot signs in first and takes the # dd-signin
+# screenshots: DD-SHOT SIGNIN OK <method>, or DD-SHOT FAIL <DEF-id> signin # dd-signin
+# <reason> and no screenshot. Lines ending in "# dd-signin" are written # dd-signin
+# only then. # dd-signin
 
 dd_browser=''
 dd_dir=''
 dd_cmd=''
 dd_url=''
 dd_wait='' # dd-stack
+dd_worker='' # dd-signin
 
 usage() {
 	echo "DD-SHOT FAIL usage: sh dd-shot <DEF-id> <path> [<path>...] (at most 8 paths, each starting with /)"
@@ -89,6 +94,7 @@ command -v curl >/dev/null 2>&1 || fail "no-curl"
 command -v timeout >/dev/null 2>&1 || fail "no-timeout"
 [ -x "$dd_browser" ] || fail "no-browser"
 [ -d "$dd_dir" ] || fail "no-worktree"
+[ -z "$dd_worker" ] || [ -x "$dd_worker" ] || fail "no-dd-worker" # dd-signin
 
 here=$(pwd)
 out="fix-evidence/$def"
@@ -157,6 +163,14 @@ for f in "$out"/fix-[0-9][0-9].png; do
 	[ "$k" -gt "$n" ] && n=$k
 done
 
+if [ -n "$dd_worker" ]; then # dd-signin
+	TMPDIR="$tmp" XDG_CONFIG_HOME="$tmp/dd-shot-xdg-$$" XDG_CACHE_HOME="$tmp/dd-shot-xdgc-$$" "$dd_worker" shot --browser "$dd_browser" --config "$here/dd-shot-signin.json" --def "$def" --dir "$out" --after "$n" --url "$url" --timeout "$shot_s" -- "$@" 2>.dd-shot/browser.log # dd-signin
+	status=$? # dd-signin
+	rm -rf "$tmp/dd-shot-xdg-$$" "$tmp/dd-shot-xdgc-$$" # dd-signin
+	[ -z "$short" ] || rm -rf "$short" # dd-signin
+	stop # dd-signin
+	exit $status # dd-signin
+fi # dd-signin
 status=0
 for p in "$@"; do
 	n=$((n + 1))

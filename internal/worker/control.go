@@ -181,6 +181,9 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 			return fail(workerproto.CodeInternal, err.Error())
 		}
 		d = w.currentRedactor().Values(d)
+		if si := meta.Spec.App.JobStackSignIn; si != nil && si.Password != "" {
+			d = strings.ReplaceAll(d, si.Password, "[redacted]")
+		}
 		truncated := false
 		if len(d) > workerproto.MaxDiffBytes {
 			d, truncated = cutUTF8(d, workerproto.MaxDiffBytes), true
@@ -218,6 +221,19 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 			}
 			if b.Branch != "dd/"+j.id+"/"+b.Repo || b.Branch == b.BaseBranch {
 				return fail(workerproto.DeclineBadSpec, "not a job branch: "+r.Repo)
+			}
+		}
+		// S10: the Stack sign-in password never ships.
+		if si := meta.Spec.App.JobStackSignIn; si != nil && si.Password != "" {
+			for _, r := range f.Control.Repos {
+				b, _ := binding(meta, r.Repo)
+				base := meta.Spec.DiffBase[b.Repo]
+				if base == "" {
+					base = b.BaseRef
+				}
+				if adds, err := exec.DiffAddsSecret(b, base, []string{si.Password}); err != nil || adds {
+					return fail(workerproto.ReasonPolicyDenied, "the diff holds the Stack sign-in password (or could not be checked): "+r.Repo)
+				}
 			}
 		}
 		out := workerproto.ShipPushResult{Repos: []workerproto.ShipPushRepo{}}

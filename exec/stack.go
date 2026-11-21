@@ -46,11 +46,77 @@ type JobStackService struct {
 	NeedsPostgres bool              `json:"needsPostgres,omitempty"`
 }
 
-// The env placeholders (S3). Anything else that looks like one is refused.
+// The env placeholders (S3, S10). Anything else that looks like one is
+// refused. The {signin.*} ones exist only with a Stack sign-in.
 const (
-	PlaceholderRandom   = "{random}"
-	PlaceholderPostgres = "{postgres.url}"
+	PlaceholderRandom         = "{random}"
+	PlaceholderPostgres       = "{postgres.url}"
+	PlaceholderSignInURL      = "{signin.url}"
+	PlaceholderSignInEmail    = "{signin.email}"
+	PlaceholderSignInPassword = "{signin.password}"
 )
+
+// Stack sign-in methods (S10).
+const (
+	SignInForm = "form"
+	SignInHTTP = "http"
+)
+
+// Stack sign-in limits (S10).
+const (
+	MaxSignInEmail    = 254
+	MinSignInPassword = 8 // shorter would redact ordinary words from logs
+	MaxSignInPassword = 256
+	MaxSignInSelector = 200
+	MaxSignInBody     = 2048
+)
+
+// StackSignIn is the Stack sign-in (S10): the app's own seed user, valid
+// only in the job's throwaway database, never a real credential. URL and
+// SuccessPath are paths on the app's URL (PreviewURL).
+type StackSignIn struct {
+	URL         string        `json:"url"`
+	Email       string        `json:"email"`
+	Password    string        `json:"password"`
+	Method      string        `json:"method"`
+	Form        *SignInFields `json:"form,omitempty"`
+	HTTP        *SignInCall   `json:"http,omitempty"`
+	SuccessPath string        `json:"successPath,omitempty"`
+}
+
+// SignInFields is a form sign-in: CSS selectors of the email and password
+// fields and of the submit control.
+type SignInFields struct {
+	EmailSelector    string `json:"emailSelector"`
+	PasswordSelector string `json:"passwordSelector"`
+	SubmitSelector   string `json:"submitSelector"`
+}
+
+// SignInCall is an HTTP sign-in, made from the browser's page so the
+// session cookie lands in it: Method (POST, PUT or PATCH) to Path with a
+// JSON body from BodyTemplate.
+type SignInCall struct {
+	Method       string `json:"method"`
+	Path         string `json:"path"`
+	BodyTemplate string `json:"bodyTemplate,omitempty"`
+}
+
+// AppOrigin is the app URL without a trailing slash.
+func (a AppSettings) AppOrigin() string { return strings.TrimSuffix(a.PreviewURL, "/") }
+
+// SignInValues are the {signin.*} placeholder values, or nil without a
+// Stack sign-in.
+func (a AppSettings) SignInValues() map[string]string {
+	si := a.JobStackSignIn
+	if si == nil {
+		return nil
+	}
+	return map[string]string{
+		PlaceholderSignInURL:      a.AppOrigin() + si.URL,
+		PlaceholderSignInEmail:    si.Email,
+		PlaceholderSignInPassword: si.Password,
+	}
+}
 
 // placeholderRe is any {token} of letters, digits and . _ : -: the shape a
 // placeholder has, so a misspelt one, or a form S3 rules out such as

@@ -14,7 +14,9 @@
 # a failed image build fails the script.
 #
 # Then it builds an image with Debian's Chromium and runs
-# TestDDShotChromium (dd-shot writes a PNG). SKIP_BROWSER=1 skips that step;
+# TestDDShotChromium (dd-shot writes a PNG) and TestDDShotSignInChromium
+# (job stack S10: dd-worker shot signs in over the DevTools protocol, with
+# a linux dd-worker built for it). SKIP_BROWSER=1 skips that step;
 # a failed image build is reported and skipped, never passed silently.
 #
 # Usage: sh packaging/test/sandbox_test.sh
@@ -39,6 +41,7 @@ x86_64 | amd64) arch=amd64 ;;
 esac
 
 (cd "$root" && GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=$arch go test -c -o "$work/worker.test" ./internal/worker)
+(cd "$root" && GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -o "$work/dd-worker" ./cmd/dd-worker)
 "$CONTAINER" build -q -t "$IMAGE" -f "$root/packaging/test/Containerfile" "$root/packaging/test" >/dev/null
 
 "$CONTAINER" run --rm --privileged --network none \
@@ -61,6 +64,6 @@ if ! "$CONTAINER" build -q -t "$BROWSER_IMAGE" -f "$root/packaging/test/Containe
 	exit 0
 fi
 "$CONTAINER" run --rm --privileged --network none \
-	-e DD_BROWSER_E2E=1 \
+	-e DD_BROWSER_E2E=1 -e DD_WORKER_BIN=/t/dd-worker \
 	-v "$work:/t:ro" \
-	"$BROWSER_IMAGE" /t/worker.test -test.run '^TestDDShotChromium$' -test.v -test.count=1
+	"$BROWSER_IMAGE" /t/worker.test -test.run '^(TestDDShotChromium|TestDDShotSignInChromium)$' -test.v -test.count=1

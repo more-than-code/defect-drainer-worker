@@ -174,6 +174,14 @@ can take one with a headless browser. It's off by default.
    sudo apt-get install chromium
    ```
 
+   Install CJK fonts too, so pages in Chinese, Japanese or Korean render as
+   text in screenshots instead of boxes (about 89 MB; Chromium picks them up
+   the next time it starts):
+
+   ```sh
+   sudo apt-get install --no-install-recommends fonts-noto-cjk
+   ```
+
 2. Set `agent_browser` in `policy.toml` to its absolute path, for example
    `agent_browser = "/usr/bin/chromium"`. The file must be owned by root and
    not group- or world-writable, or `dd-worker policy check` fails
@@ -246,6 +254,13 @@ What it changes, for jobs of an app with a job stack:
 - The env it gives the services holds dev-only values the app's admin set,
   plus a fresh random value per job run, which the worker removes from every
   log, note and event it sends.
+- An app can also set a **Stack sign-in**: its own seed user (an email and
+  password valid only in the job's throwaway database) and how to sign in, a
+  form or an HTTP call. `dd-shot` then signs in before its screenshots with
+  `dd-worker shot`, a browser driver built into the worker binary (nothing
+  is installed), and takes no screenshot if sign-in fails. The password is
+  removed from everything the worker sends, and a fix whose diff adds it
+  never resolves or ships.
 - A job whose services need Postgres goes only to a host with
   `agent_postgres` set and Postgres ready; this worker declines it otherwise
   (`policy_denied`, "no Postgres (policy)"). Services on a job that isn't a

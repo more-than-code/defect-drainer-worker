@@ -150,6 +150,7 @@ type StackBrief struct {
 	Services   []JobStackService
 	Postgres   bool
 	TimeoutSec int
+	SignIn     *StackSignIn // the email shows; the password never does
 }
 
 // BuildBatchFixBrief ports backend/src/batches.ts buildBatchFixBrief.
@@ -480,6 +481,15 @@ func stackBriefSection(st StackBrief) []string {
 		"  Every step's log is in `.dd-stack/`.",
 		"- Your command runs with the app's preview env. The env holds dev-only values; never",
 		"  copy one into the code, notes or evidence.",
+	)
+	if st.SignIn != nil {
+		lines = append(lines,
+			"- Stack sign-in: the stack's test user is `"+briefSafe(st.SignIn.Email, 100)+"` (its password is in",
+			"  `$DD_SIGNIN_PASSWORD`; never write it down). Inside `dd-stack run`, `$DD_SIGNIN_URL`,",
+			"  `$DD_SIGNIN_EMAIL` and `$DD_SIGNIN_PASSWORD` let your command sign in as that user.",
+		)
+	}
+	lines = append(lines,
 		"- Never put setup files (env files, seed data, scripts) in a worktree to make the stack",
 		"  run: the stack is defined in Defect Drainer, and the diff must hold only the fix.",
 		"- The after-fix screenshot comes from `dd-shot`, which runs the preview through this",
@@ -504,6 +514,7 @@ func stackScreenshotsSection(b BrowserBrief) []string {
 		"- It boots the stack with `dd-stack`, runs the app's preview (`" + briefSafe(b.PreviewCmd, 200) + "`)",
 		"  in the first worktree, waits up to " + fmt.Sprint(b.Stack.TimeoutSec) + " s for " + briefSafe(b.PreviewURL, 100) + ", screenshots each path",
 		"  (for example `/` or `/settings`) into `fix-evidence/<DEF-id>/fix-NN.png`, then stops it all.",
+		signInLine(b.Stack.SignIn),
 		"- It prints one `DD-SHOT OK` or `DD-SHOT FAIL` line per step; a failed stack shows as",
 		"  `DD-SHOT FAIL <DEF-id> stack <service> <step>`. The preview's and the stack's output",
 		"  is in `.dd-shot/server.log`.",
@@ -512,4 +523,13 @@ func stackScreenshotsSection(b BrowserBrief) []string {
 		"- Screenshot only pages that render the fix. An error page is not evidence.",
 		"",
 	}
+}
+
+// signInLine is the Screenshots section's line on the Stack sign-in.
+func signInLine(si *StackSignIn) string {
+	if si == nil {
+		return "- It takes the screenshots signed out."
+	}
+	return "- It signs in as the stack's test user first (`DD-SHOT SIGNIN OK`). If that fails, it prints\n" +
+		"  `DD-SHOT FAIL <DEF-id> signin <reason>` and takes no screenshot: fix the sign-in, not the page."
 }

@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"encoding/json"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
@@ -250,8 +251,8 @@ func TestDDStackUsage(t *testing.T) {
 
 // The definition is quoted: a value with quotes and $ stays text.
 func TestStackValueQuoting(t *testing.T) {
-	urls := map[string]string{"api": "http://127.0.0.1:3000"}
-	got := stackValue(`a'b $HOME {postgres.url}?x={random}&u={services.api.url} {services.nope.url}`, urls, "R")
+	vals := DDStack{Services: []JobStackService{{Name: "api", Port: 3000}}, Random: "R"}.placeholderValues()
+	got := stackValue(`a'b $HOME {postgres.url}?x={random}&u={services.api.url} {services.nope.url}`, vals)
 	want := `'a'\''b $HOME '"$dd_pg_url"'?x=R&u=http://127.0.0.1:3000 {services.nope.url}'`
 	if got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
@@ -364,4 +365,94 @@ func TestDDShotStackFails(t *testing.T) {
 		t.Fatal("a screenshot was taken")
 	}
 	e.assertAllStopped(t)
+}
+
+// S10: with a Stack sign-in, dd-stack exports DD_SIGNIN_* to the services
+// and the command, and fills the {signin.*} placeholders.
+func TestDDStackSignInEnv(t *testing.T) {
+	a := AppSettings{PreviewURL: "http://127.0.0.1:5174/", JobStackSignIn: &StackSignIn{URL: "/login", Email: "seed@example.com", Password: "it's-a-pass"}}
+	e := newDDStackEnv(t, func(s *DDStack) {
+		s.SignIn = a.SignInValues()
+		s.Services = s.Services[1:]
+		s.Services[0].Install = `echo "$DD_SIGNIN_EMAIL" >"$DD_TEST_MARKS/svc-signin"`
+		s.PreviewEnv = map[string]string{"AS": "{signin.email}|{signin.url}"}
+	})
+	out, code := e.run(t, "run", "--", "sh", "-c", `echo "$AS|$DD_SIGNIN_URL|$DD_SIGNIN_PASSWORD" >"$DD_TEST_MARKS/cmd"`)
+	if code != 0 || strings.Contains(out, "it's-a-pass") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := e.read(t, "cmd"); got != "seed@example.com|http://127.0.0.1:5174/login|http://127.0.0.1:5174/login|it's-a-pass\n" {
+		t.Fatalf("command env %q", got)
+	}
+	if got := e.read(t, "svc-signin"); got != "seed@example.com\n" {
+		t.Fatalf("service env %q", got)
+	}
+	e.assertAllStopped(t)
+}
+
+// The HTTP body is JSON: placeholder values are escaped into it.
+func TestNewShotSignIn(t *testing.T) {
+	a := AppSettings{PreviewURL: "http://127.0.0.1:5173", JobStack: []JobStackService{{Name: "api", Port: 3000}},
+		JobStackSignIn: &StackSignIn{URL: "/login", Email: "seed@example.com", Password: `pa"ss\word<1>`, Method: SignInHTTP,
+			HTTP:        &SignInCall{Method: "POST", Path: "/api/login", BodyTemplate: `{"e":"{signin.email}","p":"{signin.password}","r":"{random}","u":"{services.api.url}"}`},
+			SuccessPath: "/account?tab=1"}}
+	vals := DDStack{Services: a.JobStack, Random: "R", SignIn: a.SignInValues()}.placeholderValues()
+	got := NewShotSignIn(a, vals)
+	if got.HTTPBody != `{"e":"seed@example.com","p":"pa\"ss\\word\u003c1\u003e","r":"R","u":"http://127.0.0.1:3000"}` {
+		t.Fatalf("body %s", got.HTTPBody)
+	}
+	var probe map[string]string
+	if err := json.Unmarshal([]byte(got.HTTPBody), &probe); err != nil || probe["p"] != a.JobStackSignIn.Password {
+		t.Fatalf("body is not the JSON it should be: %v %q", err, probe["p"])
+	}
+	if got.URL != "http://127.0.0.1:5173/login" || got.HTTPURL != "http://127.0.0.1:5173/api/login" || got.SuccessURL != "http://127.0.0.1:5173/account?tab=1" {
+		t.Fatalf("urls %+v", got)
+	}
+}
+
+// S10: dd-shot's sign-in variant boots the stack, waits for the app, then
+// hands every screenshot to dd-worker shot with its arguments, passes its
+// status on, and stops the stack. Without a sign-in, the job-stack variant
+// is 6404704's.
+func TestDDShotSignIn(t *testing.T) {
+	e := newDDStackEnv(t, func(s *DDStack) { s.Services = s.Services[1:]; s.PreviewEnv = nil })
+	worker := filepath.Join(e.bin, "dd-worker")
+	if err := os.WriteFile(worker, []byte("#!/bin/sh\necho \"$*\" >\"$DD_TEST_MARKS/shot-args\"\necho 'DD-SHOT SIGNIN OK form'\necho 'DD-SHOT FAIL DEF-1 / no-png x'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.withDDShot(t, `echo $$ >>"$DD_TEST_MARKS/pids"; touch "$DD_TEST_MARKS/up-5174"; exec sleep 60`)
+	c := DDShot{Browser: filepath.Join(e.bin, "chromium"), Dir: e.stack.Dirs["web"], PreviewCmd: `echo $$ >>"$DD_TEST_MARKS/pids"; touch "$DD_TEST_MARKS/up-5174"; exec sleep 60`,
+		PreviewURL: "http://127.0.0.1:5174/", Stack: true, TimeoutSec: e.stack.TimeoutSec, Worker: worker}
+	if err := WriteDDShot(e.handoff, c); err != nil {
+		t.Fatal(err)
+	}
+	cmd := osexec.Command("sh", DDShotName, "DEF-1", "/", "/account")
+	cmd.Dir = e.handoff
+	cmd.Env = append(os.Environ(), "PATH="+e.bin+":"+os.Getenv("PATH"), "DD_TEST_MARKS="+e.marks, "TMPDIR="+e.tmp,
+		"DD_PREVIEW_CMD=", "DD_PREVIEW_URL=", "DD_SHOT_WAIT=")
+	out, _ := cmd.Output()
+	if code := cmd.ProcessState.ExitCode(); code != 1 || string(out) != "DD-SHOT SIGNIN OK form\nDD-SHOT FAIL DEF-1 / no-png x\n" {
+		t.Fatalf("exit %d %q", code, out)
+	}
+	// The config path is the handoff's as dd-shot's pwd prints it (on a Mac,
+	// under /private).
+	head, tail := "shot --browser "+c.Browser+" --config /", "/handoff/dd-shot-signin.json --def DEF-1 --dir fix-evidence/DEF-1 --after 0 --url http://127.0.0.1:5174 --timeout 60 -- / /account\n"
+	if got := e.read(t, "shot-args"); !strings.HasPrefix(got, head) || !strings.HasSuffix(got, tail) {
+		t.Fatalf("args %q", got)
+	}
+	e.assertAllStopped(t)
+
+	// A sign-in needs the job stack; without one the variant is 6404704's.
+	c.Stack = false
+	if err := WriteDDShot(t.TempDir(), c); err == nil {
+		t.Fatal("wrote a sign-in dd-shot without the job stack")
+	}
+	c.Stack, c.Worker = true, ""
+	dir := t.TempDir()
+	if err := WriteDDShot(dir, c); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, DDShotName)); strings.Contains(string(b), "dd-signin") {
+		t.Fatal("the job-stack variant has sign-in lines")
+	}
 }

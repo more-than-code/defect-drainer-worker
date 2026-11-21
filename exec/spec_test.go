@@ -30,7 +30,7 @@ func fullReview() *ReviewRun {
 }
 
 func fullHygiene() *DiffHygieneReport {
-	return &DiffHygieneReport{Noisy: true, Repos: []RepoDiffHygiene{{Repo: "web", BaseSha: "abc", FilesChanged: 1, ChangedLines: 2, EffectiveLines: 1, FormattingOnlyLines: 1,
+	return &DiffHygieneReport{Noisy: true, StackSecret: true, Repos: []RepoDiffHygiene{{Repo: "web", BaseSha: "abc", FilesChanged: 1, ChangedLines: 2, EffectiveLines: 1, FormattingOnlyLines: 1,
 		Hunks: 2, EffectiveHunks: 1, FormattingOnlyHunks: 1, FormattingRatio: 0.5, Error: "e"}}}
 }
 
@@ -59,7 +59,11 @@ func fullSpec() JobSpec {
 				Migrate: "pnpm migrate", Seed: []string{"pnpm seed"}, Start: "pnpm dev", Port: 3000, Health: "/health",
 				Env: map[string]string{"DATABASE_URL": "{postgres.url}", "SESSION_KEY": "{random}"}, NeedsPostgres: true}},
 			PreviewEnv:        map[string]string{"API_URL": "{services.api.url}"},
-			PreviewTimeoutSec: 120},
+			PreviewTimeoutSec: 120,
+			JobStackSignIn: &StackSignIn{URL: "/login", Email: "seed@example.com", Password: "seed-pass-1", Method: SignInForm,
+				Form:        &SignInFields{EmailSelector: "#email", PasswordSelector: "#password", SubmitSelector: "button"},
+				HTTP:        &SignInCall{Method: "POST", Path: "/api/login", BodyTemplate: `{"e":"{signin.email}"}`},
+				SuccessPath: "/account"}},
 		Fix: &FixSpec{
 			Batch: Batch{ID: "BATCH-1", AppID: "app_0123456789abcdef", Title: "t", Goal: "g", Status: "in_progress", DefectIDs: []string{"DEF-1"}, Mode: "grok", Created: "c", UpdatedAt: "u", Path: "sqlite:batches/BATCH-1"},
 			Defects: []Defect{{ID: "DEF-1", AppID: "app", Title: "t", Severity: "P1", Status: "open", Area: "a", Client: "c", Surface: "s",

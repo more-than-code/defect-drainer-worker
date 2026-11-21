@@ -644,7 +644,7 @@ func (w *Worker) applyServices(d *decision, pol Policy) string {
 		return ""
 	}
 	if !app.Browser {
-		app.JobStack, app.PreviewEnv, app.PreviewTimeoutSec = nil, nil, 0
+		app.JobStack, app.PreviewEnv, app.PreviewTimeoutSec, app.JobStackSignIn = nil, nil, 0, nil
 		d.notes = append(d.notes, "job stack off: browser jobs only")
 		return ""
 	}
@@ -839,21 +839,91 @@ func validateServices(s exec.JobSpec) error {
 		if !healthPathRe.MatchString(svc.Health) {
 			return fmt.Errorf("preview service %s: invalid health path", svc.Name)
 		}
-		if err := validateStackEnv(svc.Env, names, a.NeedsPostgres()); err != nil {
+		if err := validateStackEnv(svc.Env, names, a.NeedsPostgres(), a.JobStackSignIn != nil); err != nil {
 			return fmt.Errorf("preview service %s: %w", svc.Name, err)
 		}
 	}
-	if err := validateStackEnv(a.PreviewEnv, names, a.NeedsPostgres()); err != nil {
+	if err := validateStackEnv(a.PreviewEnv, names, a.NeedsPostgres(), a.JobStackSignIn != nil); err != nil {
 		return fmt.Errorf("previewEnv: %w", err)
+	}
+	return validateSignIn(a, names)
+}
+
+// signInMethods are the HTTP sign-in's methods.
+var signInMethods = []string{"POST", "PUT", "PATCH"}
+
+// validateSignIn is the bad_spec check of the Stack sign-in (S10): it needs
+// a job stack and an app URL; paths follow the health path rule; the
+// credentials and selectors are single lines within their limits; the body
+// template uses only {random}, {services.<name>.url} and the {signin.*}
+// placeholders.
+func validateSignIn(a exec.AppSettings, names map[string]bool) error {
+	si := a.JobStackSignIn
+	if si == nil {
+		return nil
+	}
+	oneLine := func(v string, min, max int) bool {
+		return len(v) >= min && len(v) <= max && !strings.ContainsAny(v, "\x00\r\n")
+	}
+	switch {
+	case !a.StackOn():
+		return errors.New("jobStackSignIn needs a jobStack")
+	case a.PreviewURL == "":
+		return errors.New("jobStackSignIn needs previewUrl")
+	case !healthPathRe.MatchString(si.URL):
+		return errors.New("jobStackSignIn: invalid url path")
+	case si.SuccessPath != "" && !healthPathRe.MatchString(si.SuccessPath):
+		return errors.New("jobStackSignIn: invalid successPath")
+	case !oneLine(si.Email, 1, exec.MaxSignInEmail):
+		return errors.New("jobStackSignIn: invalid email")
+	case !oneLine(si.Password, exec.MinSignInPassword, exec.MaxSignInPassword):
+		return fmt.Errorf("jobStackSignIn: the password must be one line of %d–%d bytes", exec.MinSignInPassword, exec.MaxSignInPassword)
+	}
+	switch si.Method {
+	case exec.SignInForm:
+		f := si.Form
+		if f == nil || si.HTTP != nil {
+			return errors.New("jobStackSignIn: a form sign-in needs form and no http")
+		}
+		for _, sel := range []string{f.EmailSelector, f.PasswordSelector, f.SubmitSelector} {
+			if !oneLine(sel, 1, exec.MaxSignInSelector) {
+				return errors.New("jobStackSignIn: invalid form selector")
+			}
+		}
+	case exec.SignInHTTP:
+		h := si.HTTP
+		if h == nil || si.Form != nil {
+			return errors.New("jobStackSignIn: an http sign-in needs http and no form")
+		}
+		if !slices.Contains(signInMethods, h.Method) || !healthPathRe.MatchString(h.Path) {
+			return errors.New("jobStackSignIn: invalid http method or path")
+		}
+		if len(h.BodyTemplate) > exec.MaxSignInBody || strings.ContainsRune(h.BodyTemplate, 0) {
+			return fmt.Errorf("jobStackSignIn: body template over %d bytes", exec.MaxSignInBody)
+		}
+		for _, tok := range exec.Placeholders(h.BodyTemplate) {
+			switch {
+			case tok == exec.PlaceholderRandom, isSignInPlaceholder(tok), names[exec.ServicePlaceholder(tok)]:
+			default:
+				return fmt.Errorf("jobStackSignIn: unknown placeholder %s in the body", tok)
+			}
+		}
+	default:
+		return errors.New("jobStackSignIn: method must be form or http")
 	}
 	return nil
 }
 
+func isSignInPlaceholder(tok string) bool {
+	return tok == exec.PlaceholderSignInURL || tok == exec.PlaceholderSignInEmail || tok == exec.PlaceholderSignInPassword
+}
+
 // validateStackEnv checks one env map: at most MaxPreviewEnv names that
 // pass ValidEnvName, one-line values of at most MaxStackEnvValue bytes, and
-// only the S3 placeholders: {random}, {services.<name>.url} of a service in
-// names, and {postgres.url} when a service needs Postgres.
-func validateStackEnv(env map[string]string, names map[string]bool, postgres bool) error {
+// only the S3 and S10 placeholders: {random}, {services.<name>.url} of a
+// service in names, {postgres.url} when a service needs Postgres, and
+// {signin.*} with a Stack sign-in.
+func validateStackEnv(env map[string]string, names map[string]bool, postgres, signIn bool) error {
 	if len(env) > exec.MaxPreviewEnv {
 		return fmt.Errorf("more than %d env entries", exec.MaxPreviewEnv)
 	}
@@ -870,6 +940,9 @@ func validateStackEnv(env map[string]string, names map[string]bool, postgres boo
 			case tok == exec.PlaceholderPostgres && postgres:
 			case tok == exec.PlaceholderPostgres:
 				return fmt.Errorf("env %s: {postgres.url} but no service needs Postgres", k)
+			case isSignInPlaceholder(tok) && signIn:
+			case isSignInPlaceholder(tok):
+				return fmt.Errorf("env %s: %s but no jobStackSignIn", k, tok)
 			case names[exec.ServicePlaceholder(tok)]:
 			default:
 				return fmt.Errorf("env %s: unknown placeholder %s", k, tok)

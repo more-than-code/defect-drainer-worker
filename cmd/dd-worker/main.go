@@ -21,8 +21,11 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/more-than-code/defect-drainer-worker/exec"
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/config"
+	"github.com/more-than-code/defect-drainer-worker/internal/shot"
 	"github.com/more-than-code/defect-drainer-worker/internal/worker"
 )
 
@@ -63,6 +66,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return cmdPolicyCheck(args[2:], stdout, stderr)
+	case "shot":
+		return cmdShot(args[1:], stdout, stderr)
 	case "version", "--version":
 		fmt.Fprintln(stdout, worker.Version)
 		return exitOK
@@ -258,4 +263,37 @@ func cmdPolicyCheck(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "%s: valid (enabled=%v, sha256 %s)\n", path, pol.Enabled, pol.Hash)
 	return exitOK
+}
+
+// cmdShot is dd-shot's browser driver for a Stack sign-in (job stack S10),
+// run by dd-shot inside the agent's sandbox. Not listed in usage: nothing
+// else calls it.
+//
+//	dd-worker shot --browser B --config F --def D --dir OUT --after N --url APP --timeout S -- PATH...
+func cmdShot(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("shot", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	browser := fs.String("browser", "", "the host browser")
+	cfg := fs.String("config", "", "the Stack sign-in file ("+exec.ShotSignInName+")")
+	def := fs.String("def", "", "the defect id")
+	dir := fs.String("dir", "", "where the screenshots go")
+	after := fs.Int("after", 0, "the highest fix-NN already there")
+	appURL := fs.String("url", "", "the app's URL")
+	timeout := fs.Int("timeout", 60, "seconds per page")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if *browser == "" || *cfg == "" || *def == "" || *dir == "" || *appURL == "" || fs.NArg() == 0 || *after < 0 || *timeout < 1 {
+		fmt.Fprintln(stderr, "shot needs --browser, --config, --def, --dir, --url and at least one path")
+		return exitUsage
+	}
+	si, err := exec.ReadShotSignIn(*cfg)
+	if err != nil {
+		fmt.Fprintf(stdout, "DD-SHOT FAIL %s signin no-config\n", *def)
+		return exitFail
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return shot.Run(ctx, shot.Options{Browser: *browser, SignIn: si, Def: *def, Dir: *dir, After: *after,
+		AppURL: strings.TrimSuffix(*appURL, "/"), Paths: fs.Args(), Timeout: time.Duration(*timeout) * time.Second, Out: stdout})
 }
