@@ -111,7 +111,14 @@ func (w *Worker) handleOffer(ctx context.Context, s *socket, f workerproto.Offer
 		existing.mu.Lock()
 		live := existing.live
 		startedBy = existing.meta.Adapter
+		verified := existing.meta.Spec.VerifySubmitted()
 		existing.mu.Unlock()
+		if verified {
+			// §16: a submitted ref is verified once; a new submit is a new job.
+			release()
+			w.decline(s, f, workerproto.DeclineBadSpec, "a verify_submitted job does not rerun")
+			return
+		}
 		if live {
 			release()
 			w.decline(s, f, workerproto.DeclineBusy, "job is running")
@@ -251,7 +258,9 @@ func (w *Worker) evaluate(ctx context.Context, f workerproto.Offer, startedBy st
 	if spec.JobID != f.JobID {
 		return declineOf(workerproto.DeclineBadSpec, "spec jobId differs from the offer")
 	}
-	if spec.Mode != f.Mode {
+	// §16: a verify_submitted spec comes in a fresh offer. A worker before
+	// it declines here, bad_spec, as for any mode it does not know.
+	if spec.Mode != f.Mode && !(f.Mode == exec.ModeFresh && spec.VerifySubmitted()) {
 		return declineOf(workerproto.DeclineBadSpec, "spec mode differs from the offer")
 	}
 	return w.applyPolicy(spec, f.Adapter, f.Model, startedBy)
@@ -279,9 +288,12 @@ func validateSpec(s exec.JobSpec) error {
 		return fmt.Errorf("unknown kind %q", s.Kind)
 	}
 	switch s.Mode {
-	case exec.ModeFresh, exec.ModeRerun, exec.ModeResume:
+	case exec.ModeFresh, exec.ModeRerun, exec.ModeResume, exec.ModeVerifySubmitted:
 	default:
 		return fmt.Errorf("unknown mode %q", s.Mode)
+	}
+	if err := validateSubmitted(s); err != nil {
+		return err
 	}
 	if s.Label == "" || !workerproto.ValidID(s.Label) {
 		return errors.New("invalid label")
@@ -318,6 +330,9 @@ func validateSpec(s exec.JobSpec) error {
 			return errors.New("worktree without repoUrl")
 		}
 		switch {
+		case s.VerifySubmitted() && wt.Branch != "":
+			return errors.New("a verify_submitted run's worktrees are detached")
+		case s.VerifySubmitted():
 		case s.Kind == exec.KindBatchFix && wt.Branch != "dd/"+s.JobID+"/"+wt.Repo:
 			return errors.New("worktree branch must be dd/<job_id>/<repo>")
 		case s.Kind == exec.KindTestRun && wt.Branch != "":
@@ -359,6 +374,46 @@ func validateSpec(s exec.JobSpec) error {
 		}
 		if s.TestRun.RunID != "" && !workerproto.ValidID(s.TestRun.RunID) {
 			return errors.New("invalid test run id")
+		}
+	}
+	return nil
+}
+
+// validateSubmitted is §16's spec shape. A verify_submitted run is a fresh
+// batch fix with exactly one valid submitted ref per worktree repo; the
+// worker derives its diff base, baseline and base worktrees itself. Any
+// other mode carries no submitted refs.
+func validateSubmitted(s exec.JobSpec) error {
+	if len(s.BaselineWorktrees) > 0 {
+		return errors.New("baselineWorktrees are derived by the worker")
+	}
+	if !s.VerifySubmitted() {
+		if len(s.SubmittedRefs) > 0 {
+			return errors.New("submittedRefs need mode verify_submitted")
+		}
+		return nil
+	}
+	switch {
+	case s.Kind != exec.KindBatchFix:
+		return errors.New("verify_submitted is for a batch fix")
+	case len(s.SubmittedRefs) == 0:
+		return errors.New("verify_submitted without submittedRefs")
+	case len(s.DiffBase) > 0 || s.Baseline != nil || s.PriorAgentRun != nil || s.ResumeSession != "":
+		return errors.New("verify_submitted measures its own diff base and baseline")
+	case len(s.SubmittedRefs) != len(s.Worktrees):
+		return errors.New("submittedRefs must name each worktree repo once")
+	}
+	repos := map[string]bool{}
+	for _, wt := range s.Worktrees {
+		repos[wt.Repo] = true
+	}
+	for _, r := range s.SubmittedRefs {
+		if !repos[r.Repo] {
+			return errors.New("submittedRefs must name each worktree repo once")
+		}
+		delete(repos, r.Repo)
+		if !validRef(r.Ref) {
+			return errors.New("invalid submitted ref")
 		}
 	}
 	return nil

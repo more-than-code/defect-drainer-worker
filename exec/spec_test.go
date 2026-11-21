@@ -69,10 +69,12 @@ func fullSpec() JobSpec {
 			Refs:  []RunRef{{Repo: "web", Ref: "main", SHA: "abc"}},
 			Steps: []RunStep{{Key: "login", Position: 1, Section: "s", Action: "a", Expected: "e", Exploratory: true, Status: "pass", Actual: "x", Evidence: []string{"e"}, DefectID: &defID, DefectStatus: &defStatus, Review: "r", ReviewNote: "n", UpdatedAt: "u"}},
 		}},
-		StripEnv: []string{"QA_PASSWORD"},
-		Caps:     Caps{AgentMaxIters: 8, AgentMaxWallSec: 2700, ReviewOff: true, ReviewMaxTurns: 8, ReviewMaxWallSec: 900, AgentMaxTurnsArg: "120", GrokBypassPermissions: true, GrokTools: "bash", AgentMaxCostUSD: 5},
-		Adapter:  "claude",
-		Model:    "sonnet",
+		StripEnv:          []string{"QA_PASSWORD"},
+		Caps:              Caps{AgentMaxIters: 8, AgentMaxWallSec: 2700, ReviewOff: true, ReviewMaxTurns: 8, ReviewMaxWallSec: 900, AgentMaxTurnsArg: "120", GrokBypassPermissions: true, GrokTools: "bash", AgentMaxCostUSD: 5},
+		Adapter:           "claude",
+		Model:             "sonnet",
+		SubmittedRefs:     []SubmittedRef{{Repo: "web", Ref: "fix/header"}},
+		BaselineWorktrees: []git.WorktreeBinding{{Repo: "web", PrimaryAbs: "/p/web", WorktreeAbs: "/b/web", Branch: "base", RepoURL: "git@x:web.git", BaseRef: "main", BaseBranch: "main", BaseSource: "local"}},
 	}
 }
 
@@ -80,7 +82,7 @@ func fullEvents() []Event {
 	lines := []LogLine{{Text: "line", Level: "info", Source: "DefectDrainer", Guarded: true}}
 	return []Event{
 		{Kind: EventLog, JobID: "bjob_1", Lines: lines},
-		{Kind: EventStatus, JobID: "bjob_1", Lines: lines, Status: &Status{Phase: PhaseAgentExit, DiffBase: map[string]string{"web": "abc"}, Failed: true, Error: "Grok exited code=1 signal=null"}},
+		{Kind: EventStatus, JobID: "bjob_1", Lines: lines, Status: &Status{Phase: PhaseAgentExit, DiffBase: map[string]string{"web": "abc"}, SubmittedHeads: map[string]string{"web": "def"}, Failed: true, Error: "Grok exited code=1 signal=null"}},
 		{Kind: EventAgentRun, JobID: "bjob_1", Lines: lines, AgentRun: fullAgentRun()},
 		{Kind: EventBaseline, JobID: "bjob_1", Lines: lines, Baseline: fullVerification()},
 		{Kind: EventVerification, JobID: "bjob_1", Lines: lines, Verification: fullVerification(), DiffHygiene: fullHygiene(), Baseline: fullVerification()},

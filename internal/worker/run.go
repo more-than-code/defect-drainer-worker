@@ -152,7 +152,7 @@ var reasonCodes = map[string]bool{
 	workerproto.CodeInternal: true, workerproto.ReasonWorkerRestarted: true, workerproto.ReasonSecretMissing: true,
 	workerproto.ReasonPolicyDenied: true, workerproto.ReasonAdapterUnavailable: true, workerproto.ReasonBaseMissing: true,
 	workerproto.ReasonSpoolFull: true, workerproto.ReasonAgentAuth: true, workerproto.DeclineBadSpec: true,
-	workerproto.ReasonRepoAuth: true,
+	workerproto.ReasonRepoAuth: true, workerproto.ReasonSubmittedRefMissing: true, workerproto.ReasonNoMergeBase: true,
 }
 
 // fail ends run gen with done{failed}.
@@ -200,6 +200,11 @@ func (j *job) setup(ctx context.Context, in exec.JobSpec) (exec.JobSpec, error) 
 		wts = append(wts, b)
 	}
 	spec.Worktrees = wts
+	if spec.VerifySubmitted() {
+		if err := j.cutBaselines(&spec); err != nil {
+			return spec, err
+		}
+	}
 	if spec.Fix != nil {
 		j.mu.Lock()
 		tok := j.token
@@ -307,6 +312,12 @@ func (j *job) cutWorktree(ctx context.Context, spec exec.JobSpec, in git.Worktre
 	}
 	var args []string
 	switch {
+	case spec.VerifySubmitted():
+		sha, err := j.fetchSubmitted(clone, tok, spec, in.Repo)
+		if err != nil {
+			return in, err
+		}
+		args = []string{"worktree", "add", "--detach", wt, sha}
 	case in.Branch == "":
 		tr, err := testRef(clone, tok, spec, in.Repo, ref)
 		if err != nil {
@@ -357,6 +368,115 @@ func testRef(clone, tok string, spec exec.JobSpec, repo, base string) (string, e
 		}
 	}
 	return base, nil
+}
+
+// fetchSubmitted fetches repo's submitted ref with the job's read token
+// and returns the commit it names (§16). A ref the remote lacks, or a SHA
+// ref that resolves to another commit, is submitted_ref_missing.
+func (j *job) fetchSubmitted(clone, tok string, spec exec.JobSpec, repo string) (string, error) {
+	ref := ""
+	for _, r := range spec.SubmittedRefs {
+		if r.Repo == repo {
+			ref = r.Ref
+		}
+	}
+	missing := fmt.Errorf("%s: %s %s", workerproto.ReasonSubmittedRefMissing, repo, ref)
+	if ref == "" || !validRef(ref) {
+		return "", missing
+	}
+	if out, err := tokenGit(tok, "-C", clone, "fetch", "--no-tags", "origin", "--", ref).CombinedOutput(); err != nil {
+		if gitAuthFailure(out) {
+			return "", j.w.gitFailure("fetch", repo, out)
+		}
+		if refMissing(out) {
+			return "", missing
+		}
+		return "", j.w.gitFailure("fetch", repo, out)
+	}
+	sha, ok := cloneGitOut(clone, "rev-parse", "--verify", "--quiet", "--end-of-options", "FETCH_HEAD^{commit}")
+	if !ok || (commitRe.MatchString(ref) && sha != ref) {
+		return "", missing
+	}
+	return sha, nil
+}
+
+// refMissing reports whether a failed fetch said the remote has no such ref.
+func refMissing(out []byte) bool {
+	s := strings.ToLower(string(out))
+	for _, m := range []string{"couldn't find remote ref", "not our ref", "no such remote ref", "unadvertised object"} {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// cutBaselines is the rest of §16's setup, all local to the clones: each
+// submitted worktree's merge-base with its base becomes the diff base, and
+// a second detached worktree at the base is where the baseline runs.
+func (j *job) cutBaselines(spec *exec.JobSpec) error {
+	p := j.w.opts.Paths
+	spec.DiffBase = map[string]string{}
+	spec.BaselineWorktrees = nil
+	for _, b := range spec.Worktrees {
+		ref := ""
+		for _, r := range spec.SubmittedRefs {
+			if r.Repo == b.Repo {
+				ref = r.Ref
+			}
+		}
+		head := exec.WorktreeHead(b)
+		if head == "" {
+			return fmt.Errorf("%s: worktree %s has no head", workerproto.CodeInternal, b.Repo)
+		}
+		mb, ok := cloneGitOut(b.PrimaryAbs, "merge-base", "--end-of-options", head, b.BaseRef)
+		if !ok || !commitRe.MatchString(mb) {
+			return fmt.Errorf("%s: %s %s", workerproto.ReasonNoMergeBase, b.Repo, ref)
+		}
+		spec.DiffBase[b.Repo] = mb
+		dir, err := p.BaselineWorktree(j.id, b.Repo)
+		if err != nil {
+			return fmt.Errorf("%s: %v", workerproto.DeclineBadSpec, err)
+		}
+		base := b
+		base.WorktreeAbs, base.Branch = dir, ""
+		spec.BaselineWorktrees = append(spec.BaselineWorktrees, base)
+		if git.PinnedWorktree(b.PrimaryAbs, dir) {
+			continue
+		}
+		if err := os.MkdirAll(p.BaselineRoot(j.id), 0o755); err != nil {
+			return err
+		}
+		unlock := lockClone(b.PrimaryAbs)
+		cmd, err := git.PinnedWorktreeGit(b.PrimaryAbs, "", "", "worktree", "add", "--detach", dir, b.BaseRef)
+		if errors.Is(err, git.ErrLFSMissing) {
+			unlock()
+			return fmt.Errorf("%s: %s: %v", workerproto.ReasonLFSMissing, b.Repo, err)
+		} else if err != nil {
+			unlock()
+			return fmt.Errorf("%s: baseline worktree %s: %v", workerproto.CodeInternal, b.Repo, err)
+		}
+		out, err := cmd.CombinedOutput()
+		unlock()
+		if err != nil {
+			return fmt.Errorf("%s: baseline worktree %s: %s", workerproto.CodeInternal, b.Repo, lastLine(out))
+		}
+	}
+	return nil
+}
+
+// cloneGitOut runs a local (no network) git command in the clone, pinned,
+// and returns its trimmed output when it succeeded.
+func cloneGitOut(clone string, args ...string) (string, bool) {
+	cmd, err := git.PinnedWorktreeGit(clone, "", "", args...)
+	if err != nil {
+		return "", false
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(out)), true
 }
 
 func lastLine(b []byte) string {

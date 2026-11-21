@@ -316,6 +316,8 @@ These close the local-only assumptions in W1a's seam. The `local` transport keep
     - Decline reason `model_not_allowed`: the job's model is not in `allowed_models`. A server before rc4 accepts any non-empty reason.
     - `AgentRun.costByModel`, `Review.costByModel` and each lens's `costByModel` (object, optional): `{"<model>": {"costUsd": number, "inputTokens": number, "outputTokens": number}}`. From Claude's result `modelUsage`, keyed by `canonicalModel` when present, else the map key; `inputTokens` excludes cache reads and writes. Cost no model was reported for (grok, a prior record from before rc4, a key that isn't a valid model name) is under `"unknown"`, so the values sum to `totalCostUsd`. `AgentRun.costByModel` is cumulative across iterations, Resumes and Reruns, like `totalCostUsd`; `Review.costByModel` sums the lenses. The cost cap stays on the total.
 
+11. **Verify a submitted ref (worker after 0.2.0-rc4, additive, `verify_submitted.v1`, §16):** `JobSpec.mode` gains `verify_submitted`; `JobSpec` gains `submittedRefs` and the worker-derived `baselineWorktrees`; `Status` gains `submittedHeads`.
+
 ## 9. Errors and job reasons
 
 **Frame `error` codes:**
@@ -344,6 +346,8 @@ These close the local-only assumptions in W1a's seam. The `local` transport keep
 | reason | `lfs_missing` | the repo uses Git LFS and the host has no `git-lfs` (W3, additive) |
 | reason | `spool_full` | one job exceeded the spool cap |
 | reason | `agent_auth` | unchanged |
+| reason | `submitted_ref_missing` | `verify_submitted` (§16): the remote has no such ref, or a commit-id ref resolved to another commit |
+| reason | `no_merge_base` | `verify_submitted` (§16): the submitted commit shares no history with the base |
 
 **Policy reasons** (`dd-worker policy check`, the hello `policy` block's reason; additive in 0.2.0-rc2): `bad_agent_allowed_domains` (not exact lowercase hostnames, a wildcard, an IP address, a duplicate, or more than 16) and `bad_max_cost_usd` (not 1 to 100). A worker before 0.2.0-rc2 reports both keys as `unknown_key`.
 
@@ -355,7 +359,7 @@ Additive in 0.2.0-rc4: `bad_allowed_models` (an empty list, an empty or invalid 
 
 - **Names:** a capability is a lowercase dotted name with a version, for example `blobs.v1`.
 - **Gating:** a gated frame or field is sent only if both `hello` lists name it. Absent means the old behaviour, and a v1 worker keeps working when the server adds one. Criterion 11 is tested with a fake server and a fake worker.
-- **Baseline:** every v1 worker must advertise `blobs.v1`. Since N6, the server offers remote jobs only to workers that also advertise `gittoken.v1` (§14). Future additions (`sse_log`, `codex_adapter`, `multi_job`, …) are new capabilities.
+- **Baseline:** every v1 worker must advertise `blobs.v1`. Since N6, the server offers remote jobs only to workers that also advertise `gittoken.v1` (§14). Future additions (`sse_log`, `codex_adapter`, `multi_job`, …) are new capabilities. Since the worker after 0.2.0-rc4, `verify_submitted.v1` (§16) gates the `verify_submitted` mode.
 
 ## 11. Security and limits
 
@@ -493,3 +497,43 @@ Additive (worker-browser spec, decisions B1–B8). A remote fix job for a UI def
 - It runs the preview in the first worktree as its own process group, waits up to 90 s for the URL, and screenshots each path with the browser (`--headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage`, a fresh profile in a short temp dir, 60 s each) into `fix-evidence/<DEF-id>/fix-NN.png`, numbered after the files already there. Then it stops the preview.
 - It prints only `DD-SHOT OK <DEF-id> <file> <bytes>B <path>` or `DD-SHOT FAIL <DEF-id> <why>` lines. Exit 0 when every shot was written, 1 otherwise, 2 on bad arguments.
 - **NO-SCREENSHOT** on a browser job is meant for a `dd-shot` failure (its `DD-SHOT FAIL` line quoted in `NOTES.md`) or an app with no preview. The loop releases on the marker as for any strict job, and harvest never resolves without a fresh image.
+
+## 16. Verify a submitted ref (`verify_submitted.v1`, worker after 0.2.0-rc4)
+
+Additive (the control plane's bring-your-own-agent spec, decision M5). A user's own agent fixes a defect outside Defect Drainer and submits a branch. A worker verifies it with the same gates as a DD fix (baseline, the app's checks, diff hygiene, the reviewer), with no coding agent, and never pushes.
+
+**Capability.** The worker lists `verify_submitted.v1` in `hello.capabilities`. The server offers a `verify_submitted` job only to such a worker. A worker without it declines the offer `bad_spec` (`spec mode differs from the offer`), as for any mode it doesn't know.
+
+**Offer.** The offer frame's `mode` is `fresh`. The spec's `mode` is `verify_submitted`; that pair is the only one where the two differ.
+
+**Spec** (`kind` must be `batch_fix`), else `decline bad_spec`:
+
+| Field | Rule |
+|---|---|
+| `mode` | `"verify_submitted"`. |
+| `submittedRefs` | `[{"repo": "<repo>", "ref": "<ref>"}]`: exactly one entry per `worktrees[].repo`, no other repo. `ref` is a branch name or a 40- or 64-hex commit id, with the base-branch rules: `[A-Za-z0-9._/-]{1,200}`, not starting with `-`, no `..`, `//`, trailing `/` or `.lock`. Any other mode carries no `submittedRefs`. |
+| `worktrees[].branch` | `""`: the worktrees are detached. A `dd/…` branch is refused. |
+| `diffBase`, `baseline`, `priorAgentRun`, `resumeSession` | Absent: the worker measures them. |
+| `baselineWorktrees` | Never sent by a server, in any mode. Derived by the worker (§8.2 style): detached worktrees at each base, `{state}/jobs/<job_id>/baseline-worktrees/<repo>`. |
+| `app.browser` | Ignored: no screenshots are taken. Fix evidence comes from the server. |
+
+**Setup**, per repo, before any check:
+1. The base is fetched and `BaseRef` resolved as for any remote job (§8.3, §14).
+2. The submitted ref is fetched with the job's **read** token (`git fetch --no-tags origin -- <ref>`) and pinned to the commit it names. A ref the remote lacks, or a commit-id ref that resolves to another commit, fails the job `submitted_ref_missing: <repo> <ref>`. An auth refusal is `repo_auth`.
+3. A detached worktree is cut at that commit (`worktrees/<repo>`), and another at `BaseRef` (`baseline-worktrees/<repo>`).
+4. The diff base is the merge-base of the commit and `BaseRef`. If there is none, the job fails `no_merge_base: <repo> <ref>`.
+
+A failure at any step ends the run `done {state:"failed", line:"<reason>: …"}` before the baseline. No token with write access is asked for.
+
+**Run.**
+- **No coding agent:** no prompt is built and no implementer starts. There is no `agent_run` event. The reviewer is the only agent spend, with the job's `adapter` and `model`.
+- **Events, in order:**
+  - `status` phases `handoff`, `prepared`, `ready` (the adapter's login is checked, for the reviewer);
+  - `baseline`, from the base worktrees;
+  - `status running` with `diffBase` (the merge-bases) and **`submittedHeads`** (`{"<repo>": "<commit verified>"}`), so the server can tell whether the branch moved before it opens a PR;
+  - `status loop_ended`, then `status agent_exit` with `failed` false;
+  - `verification` (with `diffHygiene` from the merge-base to the commit), `review` and `harvest`, as for a batch fix;
+  - `done {state:"completed", line:"verify complete — submitted refs checked; nothing pushed"}`, then `status exited`.
+- **Verdict:** the rules are unchanged (§8 item 8). `harvest.defects` carries no worker images; the server applies its own evidence rule.
+
+**After the run.** The job never ships, resumes or reruns. `ship` and `resume` controls fail `bad_spec`, and a rerun offer is declined `bad_spec`. `diff`, `ship_preview` and `discard` work as usual; `discard` also removes the base worktrees.

@@ -123,6 +123,9 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 		if live {
 			return fail(workerproto.CodeInternal, "job is running")
 		}
+		if meta.Spec.VerifySubmitted() {
+			return fail(workerproto.DeclineBadSpec, "a verify_submitted job does not resume")
+		}
 		if !w.serverHasGitToken() {
 			return fail(workerproto.DeclineBadSpec, workerproto.DetailServerLacksGitToken)
 		}
@@ -201,6 +204,10 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 		if meta.Spec.Kind != exec.KindBatchFix {
 			return fail(workerproto.DeclineBadSpec, "only a batch fix ships")
 		}
+		if meta.Spec.VerifySubmitted() {
+			// §16: the worker never pushes in this mode.
+			return fail(workerproto.DeclineBadSpec, "a verify_submitted job never ships")
+		}
 		for _, r := range f.Control.Repos {
 			b, found := binding(meta, r.Repo)
 			if !found {
@@ -224,7 +231,7 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 			return fail(workerproto.CodeInternal, "job is running")
 		}
 		dir := w.opts.Paths.JobDir(j.id)
-		git.DiscardWorktrees(meta.Spec.Worktrees, dir)
+		git.DiscardWorktrees(append(append([]git.WorktreeBinding(nil), meta.Spec.Worktrees...), meta.Spec.BaselineWorktrees...), dir)
 		if err := os.RemoveAll(dir); err != nil {
 			return fail(workerproto.CodeInternal, "discard: "+err.Error())
 		}
