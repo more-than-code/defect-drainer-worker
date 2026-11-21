@@ -63,6 +63,9 @@ type Host struct {
 	// once it has unix sockets (B2).
 	Browser       string
 	MaskedSockets []string
+	// Postgres is policy agent_postgres when the job's stack needs
+	// Postgres (job stack S2, S8); "" otherwise.
+	Postgres string
 }
 
 // AgentAdapter is the host's adapter.

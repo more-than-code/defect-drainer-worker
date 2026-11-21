@@ -1,7 +1,9 @@
 package exec
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -35,6 +37,10 @@ type run struct {
 	// secret is the test account password, read from the host env once the
 	// orchestrator has accepted the run. It never leaves this host.
 	secret string
+	// stackRandom is this run's {random} value when the job has preview
+	// services (S3). It is redacted from every event and agent.log like
+	// secret; the two never meet, since a test run has no stack.
+	stackRandom string
 }
 
 // loopFinish is what the driver loop hands the after-loop phase once it has
@@ -67,6 +73,9 @@ func (r *run) isTestRun() bool { return r.spec.Kind == KindTestRun }
 // account's password.
 func (r *run) emit(e Event) error {
 	e.JobID = r.spec.JobID
+	if r.stackRandom != "" {
+		e = redactEvent(e, r.stackRandom)
+	}
 	if r.secret == "" {
 		return r.sink.Apply(e)
 	}
@@ -174,14 +183,59 @@ func (r *run) writeHandoff() error {
 	}
 	if r.browserOn() {
 		in.Browser = &BrowserBrief{PreviewCmd: s.App.PreviewCmd, PreviewURL: s.App.PreviewURL}
+		stack := s.App.StackOn()
+		if stack {
+			if err := r.writeDDStack(); err != nil {
+				return err
+			}
+			in.Browser.Stack = &StackBrief{Services: s.App.JobStack, Postgres: s.App.NeedsPostgres(), TimeoutSec: s.App.PreviewTimeout()}
+		}
 		if err := WriteDDShot(s.Handoff, DDShot{
 			Browser: r.host.Browser, Dir: s.Worktrees[0].WorktreeAbs,
 			PreviewCmd: s.App.PreviewCmd, PreviewURL: s.App.PreviewURL,
+			Stack: stack, TimeoutSec: s.App.PreviewTimeout(),
 		}); err != nil {
 			return err
 		}
 	}
 	return WriteHandoffBrief(s.Handoff, in)
+}
+
+// writeDDStack writes dd-stack with a fresh {random} value, which the run
+// then redacts (S3, S4).
+func (r *run) writeDDStack() error {
+	random, err := NewStackRandom()
+	if err != nil {
+		return err
+	}
+	r.stackRandom = random
+	s := r.spec
+	dirs := map[string]string{}
+	for _, w := range s.Worktrees {
+		dirs[w.Repo] = w.WorktreeAbs
+	}
+	return WriteDDStack(s.Handoff, DDStack{
+		Services: s.App.JobStack, PreviewEnv: s.App.PreviewEnv, Dirs: dirs,
+		Postgres: r.host.Postgres, TimeoutSec: s.App.PreviewTimeout(), Random: random,
+	})
+}
+
+// redactEvent replaces value in every text of e: log lines, notes, diff
+// hygiene, review and verification output. The JSON form holds them all,
+// and a hex value needs no escaping in it. An event without the value is
+// returned unchanged.
+func redactEvent(e Event, value string) Event {
+	b, err := json.Marshal(e)
+	if err != nil || !bytes.Contains(b, []byte(value)) {
+		return e
+	}
+	var out Event
+	if err := json.Unmarshal(bytes.ReplaceAll(b, []byte(value), []byte("[redacted]")), &out); err != nil {
+		// Unreachable: the bytes are e's own JSON with hex replaced by
+		// ASCII. Keep the kind and drop every payload rather than leak.
+		return Event{Kind: e.Kind, JobID: e.JobID}
+	}
+	return out
 }
 
 // browserOn is a worker browser job (worker-browser B1–B6): the spec's
@@ -427,6 +481,8 @@ func (r *run) start() (Outcome, error) {
 		if r.secret != "" {
 			opts.Secret = r.secret
 			opts.ExtraEnv["DD_TEST_ACCOUNT_PASSWORD"] = r.secret
+		} else if r.stackRandom != "" {
+			opts.Secret = r.stackRandom
 		}
 		return git.StartCodingAgent(handoff, label, s.DefectsRoot, wts, sandbox, onStdout, onStderr, opts)
 	}

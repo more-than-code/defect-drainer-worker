@@ -123,6 +123,7 @@ func (j *job) launch(d decision, leaseID string) {
 	// A worker browser job (worker-browser B1, B2): the browser and the
 	// fresh socket masks from the offer's decision.
 	eh.Browser, eh.MaskedSockets = d.browser, d.masked
+	eh.Postgres = d.postgres
 	out, err := exec.Start(ctx, eh, spec, runSink{j: j, gen: gen}, exec.Hooks{})
 	if err != nil {
 		j.fail(gen, withCode(err))

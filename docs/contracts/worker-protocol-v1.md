@@ -251,6 +251,7 @@ The worker applies its `policy.toml` to **every** `JobSpec`, including each `res
 | `ship` control | Only if `allow_ship`; otherwise `control_result {ok:false, code:"policy_denied"}` |
 | `AppSettings.agentHosts` (§15) | Empty: the job's sandbox may reach `policy.agent_allowed_domains`. Otherwise only the hosts in both lists; each dropped host is a job-log line |
 | `AppSettings.browser` (§15) | Kept only with `policy.agent_browser`, a ready browser, a complete socket scan, adapter `claude` and kind `batch_fix`; otherwise cleared, with a job-log line naming why |
+| `AppSettings.jobStack` (§17) | Kept only when `browser` is kept; otherwise cleared with `previewEnv` and `previewTimeoutSec`, with the job-log line `job stack off: browser jobs only`. Kept services that need Postgres need `policy.agent_postgres` and a ready `postgres` tool, else `decline policy_denied` |
 | invalid or non-root-owned `policy.toml` | `policy.valid:false`; every offer is declined `policy_denied` |
 
 ### 6.6 Secrets on the host (D5)
@@ -342,6 +343,7 @@ These close the local-only assumptions in W1a's seam. The `local` transport keep
 | reason / decline | `policy_denied` | host policy refuses |
 | reason | `adapter_unavailable` | chosen adapter went not-ready |
 | decline | `model_not_allowed` | the job's model is not in policy `allowed_models` (0.2.0-rc4) |
+| decline | `policy_denied` | the job's stack needs Postgres and the host has no `agent_postgres` (detail `no Postgres (policy)`), or its `postgres` tool isn't ready (detail `postgres not ready: <reason>`) (§17) |
 | reason | `base_missing` | base branch absent in the worker's clone |
 | reason | `lfs_missing` | the repo uses Git LFS and the host has no `git-lfs` (W3, additive) |
 | reason | `spool_full` | one job exceeded the spool cap |
@@ -355,11 +357,13 @@ Additive in 0.2.0-rc3 (§15): `bad_agent_browser` (not an absolute, clean path; 
 
 Additive in 0.2.0-rc4: `bad_allowed_models` (an empty list, an empty or invalid name, a duplicate, or more than 16). A worker before 0.2.0-rc4 reports the key as `unknown_key`.
 
+Additive in 0.2.0-rc6 (§17): `bad_agent_postgres` (not an absolute, clean path; or an existing directory that isn't owned by root or is group- or world-writable, or whose `initdb`, `pg_ctl` or `postgres` isn't a regular executable owned by root and writable only by root). A worker before 0.2.0-rc6 reports the key as `unknown_key`.
+
 ## 10. Capabilities
 
 - **Names:** a capability is a lowercase dotted name with a version, for example `blobs.v1`.
 - **Gating:** a gated frame or field is sent only if both `hello` lists name it. Absent means the old behaviour, and a v1 worker keeps working when the server adds one. Criterion 11 is tested with a fake server and a fake worker.
-- **Baseline:** every v1 worker must advertise `blobs.v1`. Since N6, the server offers remote jobs only to workers that also advertise `gittoken.v1` (§14). Future additions (`sse_log`, `codex_adapter`, `multi_job`, …) are new capabilities. Since the worker after 0.2.0-rc4, `verify_submitted.v1` (§16) gates the `verify_submitted` mode.
+- **Baseline:** every v1 worker must advertise `blobs.v1`. Since N6, the server offers remote jobs only to workers that also advertise `gittoken.v1` (§14). Future additions (`sse_log`, `codex_adapter`, `multi_job`, …) are new capabilities. Since the worker after 0.2.0-rc4, `verify_submitted.v1` (§16) gates the `verify_submitted` mode. Since 0.2.0-rc6, `job_stack.v1` (§17) gates the job-stack spec fields.
 
 ## 11. Security and limits
 
@@ -537,3 +541,40 @@ A failure at any step ends the run `done {state:"failed", line:"<reason>: …"}`
 - **Verdict:** the rules are unchanged (§8 item 8). `harvest.defects` carries no worker images; the server applies its own evidence rule.
 
 **After the run.** The job never ships, resumes or reruns. `ship` and `resume` controls fail `bad_spec`, and a rerun offer is declined `bad_spec`. `diff`, `ship_preview` and `discard` work as usual; `discard` also removes the base worktrees.
+
+## 17. Job stack (`job_stack.v1`, worker 0.2.0-rc6)
+
+Additive (the control plane's job-stack spec, decisions S1–S9). An app defines its job stack once: up to 4 services and an optional throwaway Postgres. A browser job (§15) boots it inside the agent's sandbox with the `dd-stack` helper, for the agent to try the app and for `dd-shot`'s after-fix screenshot.
+
+**Capability.** Every rc6 worker advertises `job_stack.v1`: it understands the spec fields below. Whether Postgres is ready is the `postgres` tool. The server sends services only to workers that advertise the capability; one whose services need Postgres goes only to a worker whose policy block has `postgres` set and whose `postgres` tool is ready. An older worker would ignore the fields, so it must not be offered such a job.
+
+**Policy block** (hello, status): `"postgres": "/usr/lib/postgresql/15/bin"`, policy `agent_postgres`. Omitted when unset or when the policy is invalid.
+
+**Tool.** With `agent_postgres` set, `tools` carries `{"name":"postgres","version":"15.10","ready":true}` (the version from `<dir>/postgres --version`). **Only then:** a server before rc6 refuses the name (`ValidateTools`), so the control plane moves to rc6 before any host sets `agent_postgres`. Not-ready reasons:
+- `missing`: the directory or one of `initdb`, `pg_ctl`, `postgres` is absent, or `--version` fails or prints no version;
+- `unsafe`: the directory or a binary is no longer root's alone;
+- `unsupported_os`: not Linux.
+
+**Spec fields** (`JobSpec.App`), else `decline bad_spec`:
+
+| Field | Rule |
+|---|---|
+| `jobStack` | At most 4, in start order. Each: `name` `[a-z][a-z0-9-]{0,31}`, unique; `repo` one of the job's `worktrees[].repo`; `install`, `migrate` (optional), `seed` (at most 4, none blank) and `start` (required), each one line of at most 500 bytes; `port` 1024–65535, unique, not the `previewUrl` port; `health` a path starting with `/` (`[A-Za-z0-9/._~%?=&-]`, at most 200 bytes); `env` (below); `needsPostgres`. |
+| `env`, `previewEnv` | At most 32 entries. Names pass `ValidEnvName`; values are one line of at most 1024 bytes. Any `{token}` of letters, digits and `._:-` must be `{random}`, `{services.<name>.url}` of a listed service, or `{postgres.url}` when a service has `needsPostgres`; anything else, such as `{secret:NAME}`, is refused. |
+| `previewTimeoutSec` | 0 (meaning 90) or 30–300. The whole stack's bound and `dd-shot`'s wait for the preview URL. |
+
+`previewEnv` and `previewTimeoutSec` are checked without services too, and then ignored: a job without services runs as before, `dd-shot` byte for byte.
+
+**Placeholders.** `{services.<name>.url}` is `http://127.0.0.1:<port>`. `{postgres.url}` is `postgresql://postgres@127.0.0.1:<port>/postgres` on a free loopback port. `{random}` is 32 random bytes in hex, one value per job run, the same in every entry, so a service and the preview can share it. The worker removes that value from every event it sends (log lines, notes, diff hygiene, review and verification text) and from `agent.log`, as `[redacted]`.
+
+**`dd-stack`** (in the handoff next to `dd-shot`; POSIX sh): `sh dd-stack run -- <cmd> [<arg>…]`, in one sandboxed call.
+1. If a service needs Postgres: `initdb` in a fresh directory under `$TMPDIR`, trust auth, then `pg_ctl start` on a random loopback port (no unix socket).
+2. Each service in order, in its worktree with its env: `install`, `migrate`, each seed, then `start` as its own process group, waiting up to 120 s for `http://127.0.0.1:<port><health>` to answer 2xx. The whole stack must be up within `previewTimeoutSec`.
+3. `<cmd>` runs with `previewEnv`, not the services' env.
+4. Everything stops on any exit, Postgres included, and the temp directory is removed.
+
+It prints only these lines, never an env value: `DD-STACK UP postgres 127.0.0.1:<port>`, `DD-STACK OK <service> <step> <secs>s`, `DD-STACK UP <service> http://127.0.0.1:<port>`, `DD-STACK RUN`, `DD-STACK FAIL <service> <step> log=.dd-stack/<file>` followed by that log's last 20 lines, and `DD-STACK DOWN`. Steps are `install`, `migrate`, `seed-<n>`, `start`, `health` (and `initdb`, `start` for `postgres`). Exit: `<cmd>`'s status once the stack is up, 125 when the stack failed, 2 on bad arguments. Logs stay in `.dd-stack/` in the handoff.
+
+**`dd-shot`** with services: the preview runs as `dd-stack run -- sh -c <previewCmd>`, and `dd-shot` waits `previewTimeoutSec` for the URL instead of 90 s. A failed stack prints `DD-SHOT FAIL <DEF-id> stack <service> <step> log=.dd-stack/<file>` and that log's last 20 lines. Arguments, output and exit codes are otherwise §15's.
+
+**Brief.** A `## Stack` section lists each service's name, repo, steps, URL and health path, and Postgres when used (never an env value), with how to run `dd-stack` and the rule that setup files never go in a worktree.

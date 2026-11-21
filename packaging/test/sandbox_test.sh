@@ -8,7 +8,12 @@
 # apply the generated settings file's rules with bwrap directly. See the
 # tests' comments.
 #
-# Then it builds a second image with Debian's Chromium and runs
+# Then it builds an image with Debian's Postgres and runs
+# TestDDStackPostgresBwrap (dd-stack boots Postgres and a sample service in
+# bwrap, runs a command and leaves nothing running). It is a required gate:
+# a failed image build fails the script.
+#
+# Then it builds an image with Debian's Chromium and runs
 # TestDDShotChromium (dd-shot writes a PNG). SKIP_BROWSER=1 skips that step;
 # a failed image build is reported and skipped, never passed silently.
 #
@@ -18,6 +23,7 @@ set -eu
 CONTAINER=${CONTAINER:-podman}
 IMAGE=localhost/dd-worker-install-test:bookworm
 BROWSER_IMAGE=localhost/dd-worker-browser-test:bookworm
+STACK_IMAGE=localhost/dd-worker-stack-test:bookworm
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d)
@@ -39,6 +45,12 @@ esac
 	-e DD_SANDBOX_E2E=1 \
 	-v "$work:/t:ro" \
 	"$IMAGE" /t/worker.test -test.run '^(TestSandboxLayoutBwrap|TestBrowserSandboxBwrap)$' -test.v -test.count=1
+
+"$CONTAINER" build -q -t "$STACK_IMAGE" -f "$root/packaging/test/Containerfile.stack" "$root/packaging/test" >/dev/null
+"$CONTAINER" run --rm --privileged --network none \
+	-e DD_STACK_E2E=1 \
+	-v "$work:/t:ro" \
+	"$STACK_IMAGE" /t/worker.test -test.run '^TestDDStackPostgresBwrap$' -test.v -test.count=1
 
 if [ "${SKIP_BROWSER:-}" = 1 ]; then
 	echo "sandbox_test: SKIP TestDDShotChromium (SKIP_BROWSER=1)"

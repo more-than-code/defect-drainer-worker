@@ -426,7 +426,7 @@ func (w *Worker) helloFrame() workerproto.Hello {
 	}
 	return workerproto.Hello{
 		Header: workerproto.NewHeader(workerproto.TypeHello), WorkerID: workerID,
-		Version: Version, Protocol: workerproto.Protocol, Capabilities: []string{workerproto.CapBlobsV1, workerproto.CapGitTokenV1, workerproto.CapBrowserV1, workerproto.CapVerifySubmittedV1},
+		Version: Version, Protocol: workerproto.Protocol, Capabilities: []string{workerproto.CapBlobsV1, workerproto.CapGitTokenV1, workerproto.CapBrowserV1, workerproto.CapVerifySubmittedV1, workerproto.CapJobStackV1},
 		MaxJobs: pol.MaxJobs, BusyJobIDs: w.busyIDs(), Adapters: st, Tools: w.toolsNow(), Policy: w.wirePolicy(pol),
 	}
 }
@@ -451,7 +451,8 @@ func (w *Worker) toolsNow() []workerproto.ToolStatus {
 // recheckTools probes git and stores the result (display only). With policy
 // agent_browser set it also checks the browser and scans the host sockets
 // (B2); the browser entry is sent only then, because a server before
-// browser.v1 refuses the name. It runs on hello and in the 5-minute
+// browser.v1 refuses the name. With agent_postgres it also checks the
+// Postgres binaries (job stack, S8). It runs on hello and in the 5-minute
 // readiness loop, never inside an offer's answer window.
 func (w *Worker) recheckTools(ctx context.Context) {
 	tools := checkTools(ctx)
@@ -463,6 +464,11 @@ func (w *Worker) recheckTools(ctx context.Context) {
 		var complete bool
 		masked, complete = w.scanSockets(pol)
 		tools = append(tools, checkBrowser(ctx, pol.AgentBrowser, w.opts.OwnerUID, complete))
+	}
+	// The postgres entry likewise only with agent_postgres: a server before
+	// job_stack.v1 refuses the name.
+	if pol.Usable() && pol.AgentPostgres != "" {
+		tools = append(tools, checkPostgres(ctx, pol.AgentPostgres, w.opts.OwnerUID))
 	}
 	w.mu.Lock()
 	w.tools = tools
