@@ -131,6 +131,19 @@ type AppSettings struct {
 	PreviewCmd string   `json:"previewCmd,omitempty"`
 	PreviewURL string   `json:"previewUrl,omitempty"`
 	AgentHosts []string `json:"agentHosts,omitempty"`
+
+	// Job stack (additive, job_stack.v1; S1–S9). The app's
+	// job stack, booted by dd-stack inside the agent's sandbox:
+	//   - JobStack: at most 4, started in order (stack.go).
+	//   - PreviewEnv: env for the command dd-stack runs (dd-shot's preview,
+	//     or the agent's), with the same placeholders.
+	//   - PreviewTimeoutSec: the whole stack's bound and dd-shot's wait for
+	//     the preview URL; 0 means 90, else 30–300.
+	// A worker keeps them only on an effective browser job; otherwise it
+	// clears them with one job-log note.
+	JobStack          []JobStackService `json:"jobStack,omitempty"`
+	PreviewEnv        map[string]string `json:"previewEnv,omitempty"`
+	PreviewTimeoutSec int               `json:"previewTimeoutSec,omitempty"`
 }
 
 // VerifySkippedHostPolicy is VerifySkipped when a worker's policy has

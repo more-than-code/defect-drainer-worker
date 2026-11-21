@@ -15,11 +15,17 @@
 # Exit 0 when every screenshot was written, 1 otherwise, 2 on bad arguments.
 # The server's and the browser's output go to .dd-shot/ in the handoff.
 # DD_PREVIEW_CMD and DD_PREVIEW_URL, when set, win over the values below.
+# With a job stack the preview runs inside dd-stack, which boots the # dd-stack
+# app's stack first, and dd-shot waits the app's preview timeout; a failed # dd-stack
+# stack is reported as: DD-SHOT FAIL <DEF-id> stack <service> <step> log=<file> # dd-stack
+# (then the log's last 20 lines). Lines ending in "# dd-stack" are written # dd-stack
+# only for an app with a job stack. # dd-stack
 
 dd_browser=''
 dd_dir=''
 dd_cmd=''
 dd_url=''
+dd_wait='' # dd-stack
 
 usage() {
 	echo "DD-SHOT FAIL usage: sh dd-shot <DEF-id> <path> [<path>...] (at most 8 paths, each starting with /)"
@@ -49,12 +55,32 @@ cmd=${DD_PREVIEW_CMD:-$dd_cmd}
 url=${DD_PREVIEW_URL:-$dd_url}
 url=${url%/}
 wait_s=${DD_SHOT_WAIT:-90}
+wait_s=${DD_SHOT_WAIT:-$dd_wait} # dd-stack
 shot_s=${DD_SHOT_TIMEOUT:-60}
 
+# The job-stack variant redefines fail below. # dd-stack
+# shellcheck disable=SC2317 # dd-stack
 fail() {
 	echo "DD-SHOT FAIL $def $*"
 	exit 1
 }
+fail() { # dd-stack
+	# dd-stack's deadline is dd-shot's: give it 3 s to report its failure. # dd-stack
+	j=0 # dd-stack
+	while [ ! -s .dd-stack/failed ] && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && [ $j -lt 3 ]; do # dd-stack
+		sleep 1 # dd-stack
+		j=$((j + 1)) # dd-stack
+	done # dd-stack
+	if [ -s .dd-stack/failed ]; then # dd-stack
+		read -r why <.dd-stack/failed # dd-stack
+		echo "DD-SHOT FAIL $def stack $why" # dd-stack
+		f=${why##*log=} # dd-stack
+		[ -f "$f" ] && tail -n 20 "$f" # dd-stack
+		exit 1 # dd-stack
+	fi # dd-stack
+	echo "DD-SHOT FAIL $def $*" # dd-stack
+	exit 1 # dd-stack
+} # dd-stack
 
 if [ -z "$cmd" ] || [ -z "$url" ]; then
 	fail "no-preview"
@@ -93,6 +119,13 @@ stop() {
 trap 'stop' EXIT
 trap 'stop; exit 1' INT TERM
 
+# The preview runs inside dd-stack, given by absolute path: it starts in # dd-stack
+# the worktree. # dd-stack
+[ -f dd-stack ] || fail "no-dd-stack" # dd-stack
+rm -f .dd-stack/failed # dd-stack
+DD_STACK="$here/dd-stack" DD_STACK_CMD=$cmd # dd-stack
+export DD_STACK DD_STACK_CMD # dd-stack
+cmd="exec sh \"\$DD_STACK\" run -- sh -c \"\$DD_STACK_CMD\"" # dd-stack
 # setsid makes the preview a process group leader (set -m needs a tty, which
 # the sandbox has none of); without it only the top process is stopped.
 if command -v setsid >/dev/null 2>&1; then

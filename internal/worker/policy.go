@@ -56,6 +56,7 @@ var policySchema = policy.Schema{
 	"agent_browser":         policy.String,
 	"agent_deny_sockets":    policy.Strings,
 	"allowed_models":        policy.Strings,
+	"agent_postgres":        policy.String,
 }
 
 // Policy is /etc/dd-worker/policy.toml as the worker enforces it. When
@@ -90,6 +91,11 @@ type Policy struct {
 	// alias does not cover a full id). Nil: any model; the file may not
 	// set an empty list.
 	AllowedModels []string
+	// AgentPostgres is the directory of the host's Postgres binaries
+	// (initdb, pg_ctl, postgres) that dd-stack runs inside the sandbox for
+	// an app's job stack ("": no jobs whose services need Postgres;
+	// S2, S8).
+	AgentPostgres string
 
 	repoPatterns []repoURL
 }
@@ -127,6 +133,7 @@ func LoadPolicy(path string, skipOwner bool, uid func(os.FileInfo) (uint32, bool
 	p.AllowedDomains = v["agent_allowed_domains"].Strings
 	p.AgentBrowser = v["agent_browser"].String
 	p.DenySockets = v["agent_deny_sockets"].Strings
+	p.AgentPostgres = v["agent_postgres"].String
 	if m, ok := v["allowed_models"]; ok {
 		if len(m.Strings) == 0 { // [] would decline every job
 			p.Reason = "bad_allowed_models"
@@ -150,6 +157,13 @@ func LoadPolicy(path string, skipOwner bool, uid func(os.FileInfo) (uint32, bool
 	if p.AgentBrowser != "" && !skipOwner {
 		if r := browserFileReason(p.AgentBrowser, uid); r != "" && r != workerproto.ReasonMissing {
 			p.Reason = "bad_agent_browser"
+			return p
+		}
+	}
+	// So must the Postgres directory and binaries (S2), on the same terms.
+	if p.AgentPostgres != "" && !skipOwner {
+		if r := postgresDirReason(p.AgentPostgres, uid); r != "" && r != workerproto.ReasonMissing {
+			p.Reason = "bad_agent_postgres"
 			return p
 		}
 	}
@@ -204,6 +218,9 @@ func (p *Policy) check() string {
 	}
 	if p.AgentBrowser != "" && !cleanAbs(p.AgentBrowser) {
 		return "bad_agent_browser"
+	}
+	if p.AgentPostgres != "" && !cleanAbs(p.AgentPostgres) {
+		return "bad_agent_postgres"
 	}
 	if !validDenySockets(p.DenySockets) {
 		return "bad_agent_deny_sockets"
@@ -311,13 +328,13 @@ func (p Policy) Wire() workerproto.Policy {
 		AllowVerifyCommands: p.AllowVerifyCommands, AllowShip: p.AllowShip,
 		AllowedDomains: nonNil(p.AllowedDomains), MaxCostUSD: p.MaxCostUSD,
 		Browser: p.AgentBrowser, MaskedSockets: []string{},
-		AllowedModels: p.AllowedModels,
+		AllowedModels: p.AllowedModels, Postgres: p.AgentPostgres,
 	}
 	if !p.Valid {
 		w.Orgs, w.Adapters, w.Repos = []string{}, []string{}, []string{}
 		w.AllowVerifyCommands, w.AllowShip = false, false
 		w.AllowedDomains, w.MaxCostUSD, w.Browser, w.MaskedSockets = []string{}, 0, "", []string{}
-		w.AllowedModels = nil
+		w.AllowedModels, w.Postgres = nil, ""
 	}
 	return w
 }

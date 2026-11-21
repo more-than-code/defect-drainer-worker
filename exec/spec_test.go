@@ -54,7 +54,12 @@ func fullSpec() JobSpec {
 			RepoEntries:    []RepoEntry{{Name: "web", URL: "/p/web", BaseSource: "local", BaseBranch: "main"}},
 			VerifySkipped:  VerifySkippedHostPolicy, VerifySkippedCommands: 2,
 			Browser: true, PreviewCmd: "pnpm dev --port 5173 --strictPort", PreviewURL: "http://127.0.0.1:5173",
-			AgentHosts: []string{"registry.npmjs.org"}},
+			AgentHosts: []string{"registry.npmjs.org"},
+			JobStack: []JobStackService{{Name: "api", Repo: "api", Install: "pnpm install --frozen-lockfile --ignore-scripts",
+				Migrate: "pnpm migrate", Seed: []string{"pnpm seed"}, Start: "pnpm dev", Port: 3000, Health: "/health",
+				Env: map[string]string{"DATABASE_URL": "{postgres.url}", "SESSION_KEY": "{random}"}, NeedsPostgres: true}},
+			PreviewEnv:        map[string]string{"API_URL": "{services.api.url}"},
+			PreviewTimeoutSec: 120},
 		Fix: &FixSpec{
 			Batch: Batch{ID: "BATCH-1", AppID: "app_0123456789abcdef", Title: "t", Goal: "g", Status: "in_progress", DefectIDs: []string{"DEF-1"}, Mode: "grok", Created: "c", UpdatedAt: "u", Path: "sqlite:batches/BATCH-1"},
 			Defects: []Defect{{ID: "DEF-1", AppID: "app", Title: "t", Severity: "P1", Status: "open", Area: "a", Client: "c", Surface: "s",

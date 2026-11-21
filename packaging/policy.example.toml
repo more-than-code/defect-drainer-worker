@@ -63,3 +63,12 @@ allow_ship = true
 # Unset means any model.
 # Versions before 0.2.0-rc4 refuse this key: remove it before a rollback.
 # allowed_models = ["sonnet", "haiku"]
+
+# Postgres server binaries for an app's job stack: an absolute path to a
+# root-owned directory, not group- or world-writable, holding initdb, pg_ctl
+# and postgres, each root's alone. Unset or empty means no jobs whose preview
+# services need Postgres. dd-stack runs them inside a browser job's sandbox;
+# disable the distro's own Postgres service (see host-setup, Job stack).
+# Upgrade the control plane first.
+# Versions before 0.2.0-rc6 refuse this key: remove it before a rollback.
+# agent_postgres = "/usr/lib/postgresql/15/bin"
