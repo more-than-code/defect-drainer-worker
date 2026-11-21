@@ -38,6 +38,7 @@
 - **Ids** (`job_id`, `lease_id`, `request_id`, `worker_id`) must match `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`, so no `.` or `:`, and never `.`/`..`.
 - **`sha256`** values are 64 lowercase hex characters.
 - **Path-ish fields:** `Worktrees[].Repo`, `RepoEntry.Name`, `EvidenceRef.Path`, `HarvestFile.Filename` and every file in a `ship` list must be relative, with no `..` segment, no leading `/` or `\`, and no NUL, and each segment must match `^[A-Za-z0-9._-]+$`. A violation in a spec makes the worker refuse it (`bad_spec`); in an event, the server refuses it (`bad_frame`) and writes nothing. The worker also resolves every path it builds and checks it stays under that job's dir.
+  - **Files inside a repo** (additive, worker 0.2.0-rc6): a `ship` control's `repos[].files` follow the app's own naming, so their segments match `^[A-Za-z0-9._+@()\[\]~-]+$` (`workerproto.ValidRepoFilePath`), for route files such as `src/routes/[id]/+page.svelte`, `src/routes/(app)/+layout.svelte` and `app/@modal/page.tsx`. They still have no empty, `.` or `..` segment, no segment starting with `-`, no leading `/`, no `\` and no NUL. The worker stages them as literal paths (`GIT_LITERAL_PATHSPECS`), so `[id]` is never a glob. A worker before rc6 refuses such a control `bad_frame`; every other path-ish field keeps the stricter rule.
 - **Duplicate job ids:** `exec.Event.jobId` and `exec.Control.jobId` must equal the frame's `job_id`, else `bad_frame`.
 
 ## 3. Enrolment (one-shot socket)

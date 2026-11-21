@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -307,7 +308,7 @@ func (j *job) shipRepo(ctx context.Context, b git.WorktreeBinding, r exec.ShipRe
 	pinned := func(wt string, args ...string) ([]byte, error) { return pinnedEnv(nil, wt, args...) }
 	if len(r.Files) > 0 {
 		for _, f := range r.Files {
-			if _, err := Under(wt, f); err != nil {
+			if !workerproto.ValidRepoFilePath(f) || !Inside(wt, filepath.Join(wt, filepath.FromSlash(f))) {
 				res.Error = "invalid file " + f
 				return res
 			}
@@ -317,7 +318,8 @@ func (j *job) shipRepo(ctx context.Context, b git.WorktreeBinding, r exec.ShipRe
 			res.Error = "commit message empty or too long"
 			return res
 		}
-		if out, err := pinned(wt, append([]string{"add", "--"}, r.Files...)...); err != nil {
+		// Literal pathspecs: a route dir such as [id] is a name, not a glob.
+		if out, err := pinnedEnv([]string{"GIT_LITERAL_PATHSPECS=1"}, wt, append([]string{"add", "--"}, r.Files...)...); err != nil {
 			res.Error = "git add: " + lastLine(out)
 			return res
 		}

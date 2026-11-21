@@ -193,3 +193,31 @@ func contains(xs []string, x string) bool {
 	}
 	return false
 }
+
+// Ship of route files (the live Create PR that hung): the control with
+// SvelteKit names passes, and git adds the listed paths literally, so
+// [id] never globs onto a sibling such as i/.
+func TestShipRouteFiles(t *testing.T) {
+	agent := fixArtifacts(testDefect) +
+		"mkdir -p '../worktrees/app/src/routes/[id]' ../worktrees/app/src/routes/i '../worktrees/app/src/routes/(app)'\n" +
+		"echo fix > '../worktrees/app/src/routes/[id]/+page.svelte'\n" +
+		"echo layout > '../worktrees/app/src/routes/(app)/+layout.svelte'\n" +
+		"echo decoy > ../worktrees/app/src/routes/i/+page.svelte\n" +
+		"cat '" + claudeFixture(t, "c1-basic") + "'\nexit 0\n"
+	h := newHarness(t, harnessOpts{agent: agent})
+	id := "bjob_ship_routes"
+	h.offerJob(fixSpec(id), nil)
+	h.waitDone(id, 60*time.Second)
+	files := []string{"src/routes/[id]/+page.svelte", "src/routes/(app)/+layout.svelte"}
+	ship := dexec.Control{Kind: dexec.ControlShip, Repos: []dexec.ShipRepo{{Repo: "app", Files: files, Message: "Fix the route", Title: "Fix the route"}}}
+	r := h.controlAndWait(id, "rq_ship_routes", ship, 1)
+	var res workerproto.ShipPushResult
+	if !r.OK || json.Unmarshal(r.Result, &res) != nil || len(res.Repos) != 1 || !res.Repos[0].Pushed || res.Repos[0].Error != "" {
+		t.Fatalf("ship %+v %s", r, r.Result)
+	}
+	origin := filepath.Join(h.tmp, "origin", "app.git")
+	out, err := exec.Command("git", "-C", origin, "show", "--name-only", "--format=", "dd/"+id+"/app").CombinedOutput()
+	if err != nil || strings.Join(strings.Fields(string(out)), ",") != "src/routes/(app)/+layout.svelte,src/routes/[id]/+page.svelte" {
+		t.Fatalf("pushed files: %v %q", err, out)
+	}
+}

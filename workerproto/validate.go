@@ -60,6 +60,28 @@ func ValidRelPath(p string) bool {
 	return true
 }
 
+// repoFileSegmentRe is one segment of a file path inside a repo: also the
+// + @ ( ) [ ] ~ that route-file conventions use (SvelteKit +page.svelte,
+// [id], (group); Next.js @slot).
+var repoFileSegmentRe = regexp.MustCompile(`^[A-Za-z0-9._+@()\[\]~-]+$`)
+
+// ValidRepoFilePath reports whether p is a file path inside a repo, as a
+// ship control's repos[].files lists it: ValidRelPath's rules (not empty,
+// not absolute, no backslash or NUL, no empty, "." or ".." segment) with
+// repoFileSegmentRe's wider segments, none starting with "-". Repo names,
+// evidence names and handoff paths keep ValidRelPath.
+func ValidRepoFilePath(p string) bool {
+	if p == "" || strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\\\x00") {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "" || seg == "." || seg == ".." || strings.HasPrefix(seg, "-") || !repoFileSegmentRe.MatchString(seg) {
+			return false
+		}
+	}
+	return true
+}
+
 // errMissing names a required key that is absent or empty.
 func errMissing(key string) error { return fmt.Errorf("missing %s", key) }
 
@@ -233,7 +255,7 @@ func (f Control) Validate() error {
 			return errors.New("invalid control.repos[].repo")
 		}
 		for _, file := range r.Files {
-			if !ValidRelPath(file) {
+			if !ValidRepoFilePath(file) {
 				return errors.New("invalid control.repos[].files entry")
 			}
 		}
