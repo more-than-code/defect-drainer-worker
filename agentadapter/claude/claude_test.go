@@ -183,10 +183,30 @@ func TestImplementerArgvAndEnv(t *testing.T) {
 	}
 	wantEnv := []string{"PATH=/bin", "ANTHROPIC_API_KEY=sk-test-key", "CLAUDE_CONFIG_DIR=/data/agent-state/j1/claude-config",
 		"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "CI=1", "SKILL_FORGE_AGENT_ROLE=worker",
+		"BASH_DEFAULT_TIMEOUT_MS=1500000", "BASH_MAX_TIMEOUT_MS=1500000",
 		// §4.1.11: tool caches under the cwd, off $HOME.
 		"npm_config_cache=/data/batch-jobs/j1/.cache/npm", "XDG_CACHE_HOME=/data/batch-jobs/j1/.cache"}
 	if !slices.Equal(c.Env, wantEnv) {
 		t.Fatalf("env = %q", c.Env)
+	}
+}
+
+// Every Claude task, implementer and reviewer, in either credential mode,
+// gets a 25-min Bash timeout instead of Claude Code's 10-min default.
+func TestBashTimeoutEnv(t *testing.T) {
+	a := New(Config{Bin: "/usr/bin/claude"})
+	for _, role := range []aa.Role{aa.Implementer, aa.Reviewer} {
+		for _, mode := range []aa.CredentialMode{aa.APIKey, aa.Subscription} {
+			c, err := a.Command(task(role, mode))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"BASH_DEFAULT_TIMEOUT_MS", "BASH_MAX_TIMEOUT_MS"} {
+				if got := aa.GetEnv(c.Env, name); got != "1500000" {
+					t.Fatalf("%v/%v: %s = %q", role, mode, name, got)
+				}
+			}
+		}
 	}
 }
 

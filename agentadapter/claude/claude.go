@@ -327,6 +327,11 @@ func childEnv(t aa.Task) ([]string, error) {
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 		"CI=1",
 		"SKILL_FORGE_AGENT_ROLE=worker",
+		// Claude Code stops a Bash command after 10 min by default; a
+		// Flutter suite on a small host takes about that long. 25 min
+		// stays inside a job's 45-min wall limit.
+		"BASH_DEFAULT_TIMEOUT_MS=1500000",
+		"BASH_MAX_TIMEOUT_MS=1500000",
 		// Tool caches live in the agent's own cwd, off $HOME, which a
 		// worker denies writes to (spec §4.1.11). The handoff is outside
 		// every worktree, so a cache never shows up in a diff.

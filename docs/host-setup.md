@@ -69,6 +69,10 @@ Claude Code is never updated by the worker: every agent run gets
 auto-updater off, and `/usr/local/bin` is read-only to the service. Update
 Claude Code yourself, as root.
 
+Every Claude task also gets `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`
+set to 1500000 (25 min, instead of Claude Code's 10-min default), so a slow
+test suite on a small host isn't stopped mid-run.
+
 It creates the `dd-worker` system user, and never overwrites an existing
 `policy.toml`.
 
