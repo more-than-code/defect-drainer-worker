@@ -1,0 +1,10 @@
+# Stack test host for packaging/test/sandbox_test.sh: the install test host
+# plus Debian's Postgres binaries (agent_postgres, as Ops installs them on a
+# worker host: docs/host-setup.md) and psql for the sample service. User
+# 1000 is the account bwrap maps the test to: initdb looks the user up.
+FROM localhost/dd-worker-install-test:bookworm
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      postgresql \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd -u 1000 -m dd

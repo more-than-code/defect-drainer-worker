@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -123,6 +124,10 @@ func (j *job) launch(d decision, leaseID string) {
 	// A worker browser job (worker-browser B1, B2): the browser and the
 	// fresh socket masks from the offer's decision.
 	eh.Browser, eh.MaskedSockets = d.browser, d.masked
+	eh.Postgres = d.postgres
+	if spec.App.JobStackSignIn != nil {
+		eh.ShotBin = shotBin()
+	}
 	out, err := exec.Start(ctx, eh, spec, runSink{j: j, gen: gen}, exec.Hooks{})
 	if err != nil {
 		j.fail(gen, withCode(err))
@@ -495,4 +500,18 @@ func lastLine(b []byte) string {
 func cloneGitOK(clone string, args ...string) bool {
 	cmd, err := git.PinnedWorktreeGit(clone, "", "", args...)
 	return err == nil && cmd.Run() == nil
+}
+
+// shotBin is this dd-worker binary, symlinks resolved to its versioned
+// path, which dd-shot runs as `dd-worker shot` for a Stack sign-in (S10).
+// "" when it cannot be found: the run then fails before the agent starts.
+func shotBin() string {
+	p, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		p = r
+	}
+	return p
 }

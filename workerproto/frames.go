@@ -136,6 +136,9 @@ type Policy struct {
 	// Additive in 0.2.0-rc4: policy allowed_models, the models a job may
 	// run on (at most MaxAllowedModels, exact names). Absent: any model.
 	AllowedModels []string `json:"allowed_models,omitempty"`
+	// Additive in 0.2.0-rc6 (job stack, S8): policy agent_postgres,
+	// the directory of the host's Postgres binaries ("": off).
+	Postgres string `json:"postgres,omitempty"`
 }
 
 type Hello struct {

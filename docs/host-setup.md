@@ -134,6 +134,9 @@ worker declines every job. `sudo sh install.sh status` shows how it reads it.
   handoff, not the home directory, and are removed with the job.
 - **Browser** (Claude fix jobs only): off unless `agent_browser` is set; see
   [After-fix screenshots](#after-fix-screenshots).
+- **Job stack** (browser jobs only): an app's services and a throwaway
+  Postgres (with `agent_postgres`), loopback only; see
+  [Job stack](#job-stack).
 - **Network** (Claude only; other adapters ignore it): none by default. `agent_allowed_domains` lists the exact
   hosts the agent's sandboxed shell may reach, for example
   `["registry.npmjs.org"]` for npm installs. Lowercase hostnames only: no
@@ -171,6 +174,14 @@ can take one with a headless browser. It's off by default.
    sudo apt-get install chromium
    ```
 
+   Install CJK fonts too, so pages in Chinese, Japanese or Korean render as
+   text in screenshots instead of boxes (about 89 MB; Chromium picks them up
+   the next time it starts):
+
+   ```sh
+   sudo apt-get install --no-install-recommends fonts-noto-cjk
+   ```
+
 2. Set `agent_browser` in `policy.toml` to its absolute path, for example
    `agent_browser = "/usr/bin/chromium"`. The file must be owned by root and
    not group- or world-writable, or `dd-worker policy check` fails
@@ -206,6 +217,58 @@ Only Linux hosts take browser jobs. Move the control plane to a release that
 knows browser workers (0.2.0-rc3 or later) **before** setting
 `agent_browser` on any host: an older server refuses the browser's readiness
 entry and keeps closing the worker's connection.
+
+### Job stack
+
+An app whose pages need a backend can define a job stack in Defect
+Drainer: up to 4 services (install, migrate, seeds, start, a port and a
+health path) and a throwaway Postgres. A browser job then boots that stack
+inside the agent's sandbox, both for the agent to try the app and for the
+after-fix screenshot. It needs a browser host (above); Postgres needs one more
+policy key.
+
+1. Install the Postgres server binaries as root and turn off the system
+   service, which the stack doesn't use, for example on Debian:
+
+   ```sh
+   sudo apt-get install postgresql
+   sudo systemctl disable --now postgresql
+   ```
+
+2. Set `agent_postgres` in `policy.toml` to the directory holding `initdb`,
+   `pg_ctl` and `postgres`, for example
+   `agent_postgres = "/usr/lib/postgresql/15/bin"`. The directory and the three
+   files must be owned by root and not group- or world-writable, or
+   `dd-worker policy check` fails (`bad_agent_postgres`) and the worker
+   declines every job.
+3. Restart the worker. Settings → Workers shows `postgres` as ready with its
+   version; `status.json` shows it under `tools` and `policy.postgres`.
+
+What it changes, for jobs of an app with a job stack:
+
+- The worker writes a `dd-stack` helper next to `dd-shot`. In one sandboxed
+  command it creates a fresh database in the job's temp directory (loopback
+  only, no unix socket), runs each service's steps in its worktree, waits up
+  to 120 s for each health URL, runs the agent's or dd-shot's command, then
+  stops everything. Its logs stay in `.dd-stack/` in the job's handoff.
+- The env it gives the services holds dev-only values the app's admin set,
+  plus a fresh random value per job run, which the worker removes from every
+  log, note and event it sends.
+- An app can also set a **Stack sign-in**: its own seed user (an email and
+  password valid only in the job's throwaway database) and how to sign in, a
+  form or an HTTP call. `dd-shot` then signs in before its screenshots with
+  `dd-worker shot`, a browser driver built into the worker binary (nothing
+  is installed), and takes no screenshot if sign-in fails. The password is
+  removed from everything the worker sends, and a fix whose diff adds it
+  never resolves or ships.
+- A job whose services need Postgres goes only to a host with
+  `agent_postgres` set and Postgres ready; this worker declines it otherwise
+  (`policy_denied`, "no Postgres (policy)"). Services on a job that isn't a
+  browser job here are dropped and noted in the job log.
+
+Move the control plane to a release that knows the job stack (0.2.0-rc6
+or later) **before** setting `agent_postgres` on any host: an older server
+refuses the `postgres` readiness entry.
 
 Every agent run logs `Permission mode forced to default —
 CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set …` on stderr. That is expected: the
@@ -284,6 +347,8 @@ Versions before 0.2.0-rc3 refuse `agent_browser` and `agent_deny_sockets` the
 same way: remove them before rolling back past rc3.
 Versions before 0.2.0-rc4 refuse `allowed_models` the same way: remove it
 before rolling back past rc4.
+Versions before 0.2.0-rc6 refuse `agent_postgres` the same way: remove it
+before rolling back past rc6.
 
 ## Remove
 

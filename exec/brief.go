@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -138,6 +139,18 @@ type BatchFixBriefInput struct {
 type BrowserBrief struct {
 	PreviewCmd string
 	PreviewURL string
+	// Stack, when set, adds the Stack section (job stack S9) and
+	// the Screenshots section says dd-shot runs the preview through it.
+	Stack *StackBrief
+}
+
+// StackBrief is the app's job stack as the brief states it: names,
+// repos, ports and URLs only, never an env value.
+type StackBrief struct {
+	Services   []JobStackService
+	Postgres   bool
+	TimeoutSec int
+	SignIn     *StackSignIn // the email shows; the password never does
 }
 
 // BuildBatchFixBrief ports backend/src/batches.ts buildBatchFixBrief.
@@ -341,6 +354,9 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 		"     still will not resolve without a new image.",
 	}
 	if input.Browser != nil {
+		if input.Browser.Stack != nil {
+			lines = append(lines, stackBriefSection(*input.Browser.Stack)...)
+		}
 		lines = append(lines, browserBriefSection(*input.Browser)...)
 		noShot = []string{
 			"   - Only if `dd-shot` failed, or this brief says the app has no preview, put a line",
@@ -401,6 +417,9 @@ func browserBriefSection(b BrowserBrief) []string {
 			"",
 		}
 	}
+	if b.Stack != nil {
+		return stackScreenshotsSection(b)
+	}
 	return []string{
 		"## Screenshots",
 		"This host has a headless browser. Take each after-fix screenshot with `dd-shot`, from",
@@ -421,4 +440,96 @@ func browserBriefSection(b BrowserBrief) []string {
 		"  renders and say so in the fix notes.",
 		"",
 	}
+}
+
+// stackBriefSection is the brief's Stack section (job stack S9):
+// what the stack holds and how the agent runs a command against it.
+func stackBriefSection(st StackBrief) []string {
+	lines := []string{
+		"## Stack",
+		"This app has a job stack. `dd-stack`, in this directory, boots it inside your sandbox:",
+	}
+	if st.Postgres {
+		lines = append(lines, "- a throwaway Postgres, fresh on every call (no data survives it);")
+	}
+	for _, s := range st.Services {
+		steps := []string{}
+		if s.Install != "" {
+			steps = append(steps, "install")
+		}
+		if s.Migrate != "" {
+			steps = append(steps, "migrate")
+		}
+		if len(s.Seed) > 0 {
+			steps = append(steps, fmt.Sprintf("%d seed(s)", len(s.Seed)))
+		}
+		steps = append(steps, "start")
+		lines = append(lines, fmt.Sprintf("- `%s` (repo `%s`): %s, then serves %s, health `%s`;",
+			s.Name, briefSafe(s.Repo, 100), strings.Join(steps, ", "), ServiceURL(s.Port), briefSafe(s.Health, 100)))
+	}
+	lines = append(lines,
+		"",
+		"To try the app against it, run your command through it in **one** Bash call, from this",
+		"directory (the stack stops when the call ends):",
+		"",
+		"```sh",
+		"sh dd-stack run -- curl -s '"+ServiceURL(st.Services[0].Port)+briefSafe(st.Services[0].Health, 100)+"'",
+		"```",
+		"",
+		fmt.Sprintf("- The stack must be up within %d s. It prints `DD-STACK` status lines only; a", st.TimeoutSec),
+		"  `DD-STACK FAIL <service> <step>` line names what failed, with its log's last lines.",
+		"  Every step's log is in `.dd-stack/`.",
+		"- Your command runs with the app's preview env. The env holds dev-only values; never",
+		"  copy one into the code, notes or evidence.",
+	)
+	if st.SignIn != nil {
+		lines = append(lines,
+			"- Stack sign-in: the stack's test user is `"+briefSafe(st.SignIn.Email, 100)+"` (its password is in",
+			"  `$DD_SIGNIN_PASSWORD`; never write it down). Inside `dd-stack run`, `$DD_SIGNIN_URL`,",
+			"  `$DD_SIGNIN_EMAIL` and `$DD_SIGNIN_PASSWORD` let your command sign in as that user.",
+		)
+	}
+	lines = append(lines,
+		"- Never put setup files (env files, seed data, scripts) in a worktree to make the stack",
+		"  run: the stack is defined in Defect Drainer, and the diff must hold only the fix.",
+		"- The after-fix screenshot comes from `dd-shot`, which runs the preview through this",
+		"  same stack.",
+		"",
+	)
+	return lines
+}
+
+// stackScreenshotsSection is the Screenshots section when the preview runs
+// through dd-stack.
+func stackScreenshotsSection(b BrowserBrief) []string {
+	return []string{
+		"## Screenshots",
+		"This host has a headless browser. Take each after-fix screenshot with `dd-shot`, from",
+		"this directory, in **one** Bash call:",
+		"",
+		"```sh",
+		"sh dd-shot <DEF-id> <path> [<path>...]",
+		"```",
+		"",
+		"- It boots the stack with `dd-stack`, runs the app's preview (`" + briefSafe(b.PreviewCmd, 200) + "`)",
+		"  in the first worktree, waits up to " + fmt.Sprint(b.Stack.TimeoutSec) + " s for " + briefSafe(b.PreviewURL, 100) + ", screenshots each path",
+		"  (for example `/` or `/settings`) into `fix-evidence/<DEF-id>/fix-NN.png`, then stops it all.",
+		signInLine(b.Stack.SignIn),
+		"- It prints one `DD-SHOT OK` or `DD-SHOT FAIL` line per step; a failed stack shows as",
+		"  `DD-SHOT FAIL <DEF-id> stack <service> <step>`. The preview's and the stack's output",
+		"  is in `.dd-shot/server.log`.",
+		"- A server you start yourself does not survive into your next Bash call, so don't serve",
+		"  the app in one call and screenshot it in another.",
+		"- Screenshot only pages that render the fix. An error page is not evidence.",
+		"",
+	}
+}
+
+// signInLine is the Screenshots section's line on the Stack sign-in.
+func signInLine(si *StackSignIn) string {
+	if si == nil {
+		return "- It takes the screenshots signed out."
+	}
+	return "- It signs in as the stack's test user first (`DD-SHOT SIGNIN OK`). If that fails, it prints\n" +
+		"  `DD-SHOT FAIL <DEF-id> signin <reason>` and takes no screenshot: fix the sign-in, not the page."
 }
