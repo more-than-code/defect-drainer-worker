@@ -174,6 +174,14 @@ func ParseEnv(body []byte) (map[string]string, error) {
 	return m, err
 }
 
+// EnvKeys are the names in an env file in file order, a repeated name
+// once per line, for a check that refuses duplicates. Values are not
+// returned.
+func EnvKeys(body []byte) ([]string, error) {
+	_, keys, err := parseEnv(body)
+	return keys, err
+}
+
 func parseEnv(body []byte) (map[string]string, []string, error) {
 	out := map[string]string{}
 	var order []string
@@ -203,9 +211,7 @@ func parseEnv(body []byte) (map[string]string, []string, error) {
 			}
 			v = u
 		}
-		if _, exists := out[k]; !exists {
-			order = append(order, k)
-		}
+		order = append(order, k)
 		out[k] = v
 	}
 	if err := sc.Err(); err != nil {

@@ -80,6 +80,37 @@ Keep `allow_verify_commands = false`: verify commands are not sandboxed.
 PR). The file must stay root-owned and not group- or world-writable, or the
 worker declines every job. `sudo sh install.sh status` shows how it reads it.
 
+### Managing the policy from a host manager
+
+From 0.2.0-rc6, a host manager such as Deploybot can own `policy.toml` and
+`secrets.env`: it shows and versions them, and applies an edit only after the
+worker accepts it. It writes both files root-owned (`policy.toml` 0644,
+`secrets.env` 0600) and calls these commands as the `dd-worker` user:
+
+| Command | Exit codes |
+|---|---|
+| `dd-worker policy check --file <path\|->` | 0 valid; 2 invalid, with one stderr line `bad_<reason>` (for example `bad_managed_url`, `bad_unknown_key`); 1 a usage error, or the file can't be read |
+| `dd-worker secrets check --file <path\|->` | the same; reasons `bad_format`, `bad_name`, `bad_duplicate`, and for a path `bad_symlink`, `bad_not_regular`, `bad_mode`, `bad_owner` |
+| `dd-worker health --wait <duration>` | 0 once the running worker has loaded the `policy.toml` now on disk, finds it valid and enabled, and is connected; 3 when the wait (at most 10m) ends, with one stderr line: `not_running`, `policy_invalid` or `not_connected` |
+| `dd-worker health --idle` | 0, or 4 (`busy`) while a job runs |
+
+- `--file -` reads the candidate from stdin and checks its content only:
+  owner and mode are the manager's job. A path is checked with the same file
+  rules as the installed file (`policy check --syntax-only` skips them).
+- The checks never print the file's contents or a secret's value. A valid
+  policy prints one line with its sha256.
+- `health` only reads `/var/lib/dd-worker/status.json` and `policy.toml`: it
+  needs no network and writes nothing.
+- A typical apply: check the candidate, run `health --idle` (or apply anyway),
+  swap the file, restart the worker, then `health --wait 30s`, and roll back
+  on any non-zero exit.
+
+Set `managed_url` in `policy.toml` to the page where the file is edited
+(https only, at most 512 characters, no user or password). The console then
+shows "Managed in Deploybot → Edit" with that link; without it, "Edited on
+the host". The worker reports the file's sha256 as the policy version, which
+equals `sha256sum /etc/dd-worker/policy.toml`.
+
 ### What a job's agent can reach
 
 - **Sandbox:** every agent except grok runs its CLI's own sandbox, `strict`,

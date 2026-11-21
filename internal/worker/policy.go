@@ -57,6 +57,7 @@ var policySchema = policy.Schema{
 	"agent_deny_sockets":    policy.Strings,
 	"allowed_models":        policy.Strings,
 	"agent_postgres":        policy.String,
+	"managed_url":           policy.String,
 }
 
 // Policy is /etc/dd-worker/policy.toml as the worker enforces it. When
@@ -96,6 +97,9 @@ type Policy struct {
 	// an app's job stack ("": no jobs whose services need Postgres;
 	// S2, S8).
 	AgentPostgres string
+	// ManagedURL is where the host's manager edits this file (https, at
+	// most MaxManagedURL bytes; "": edited on the host).
+	ManagedURL string
 
 	repoPatterns []repoURL
 }
@@ -104,7 +108,20 @@ type Policy struct {
 // or world-writable, size) unless skipOwner, then applies DD's keys and
 // defaults. uid overrides the owner for tests.
 func LoadPolicy(path string, skipOwner bool, uid func(os.FileInfo) (uint32, bool)) Policy {
-	f := policy.Load(policy.Files{Policy: path, Schema: policySchema, UID: uid, SkipOwner: skipOwner})
+	return loadPolicy(policy.Files{Policy: path, Schema: policySchema, UID: uid, SkipOwner: skipOwner}, skipOwner, uid)
+}
+
+// CheckPolicyData checks a candidate policy's bytes (dd-worker policy check
+// --file -): content only, with no owner, mode or browser-file checks.
+func CheckPolicyData(data []byte) Policy {
+	if data == nil {
+		data = []byte{}
+	}
+	return loadPolicy(policy.Files{Schema: policySchema, Data: data, SkipOwner: true}, true, nil)
+}
+
+func loadPolicy(files policy.Files, skipOwner bool, uid func(os.FileInfo) (uint32, bool)) Policy {
+	f := policy.Load(files)
 	p := Policy{Exists: f.Exists, Hash: f.Hash, Reason: f.Reason, MaxJobs: DefaultMaxJobs}
 	if !f.Exists {
 		p.Reason = "missing"
@@ -134,6 +151,7 @@ func LoadPolicy(path string, skipOwner bool, uid func(os.FileInfo) (uint32, bool
 	p.AgentBrowser = v["agent_browser"].String
 	p.DenySockets = v["agent_deny_sockets"].Strings
 	p.AgentPostgres = v["agent_postgres"].String
+	p.ManagedURL = v["managed_url"].String
 	if m, ok := v["allowed_models"]; ok {
 		if len(m.Strings) == 0 { // [] would decline every job
 			p.Reason = "bad_allowed_models"
@@ -227,6 +245,9 @@ func (p *Policy) check() string {
 	}
 	if !validModels(p.AllowedModels) {
 		return "bad_allowed_models"
+	}
+	if p.ManagedURL != "" && !workerproto.ValidManagedURL(p.ManagedURL) {
+		return "bad_managed_url"
 	}
 	p.repoPatterns = nil
 	for _, r := range p.Repos {
@@ -329,12 +350,13 @@ func (p Policy) Wire() workerproto.Policy {
 		AllowedDomains: nonNil(p.AllowedDomains), MaxCostUSD: p.MaxCostUSD,
 		Browser: p.AgentBrowser, MaskedSockets: []string{},
 		AllowedModels: p.AllowedModels, Postgres: p.AgentPostgres,
+		Hash: p.Hash, ManagedURL: p.ManagedURL,
 	}
 	if !p.Valid {
 		w.Orgs, w.Adapters, w.Repos = []string{}, []string{}, []string{}
 		w.AllowVerifyCommands, w.AllowShip = false, false
 		w.AllowedDomains, w.MaxCostUSD, w.Browser, w.MaskedSockets = []string{}, 0, "", []string{}
-		w.AllowedModels, w.Postgres = nil, ""
+		w.AllowedModels, w.Postgres, w.ManagedURL = nil, "", ""
 	}
 	return w
 }

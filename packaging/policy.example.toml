@@ -72,3 +72,9 @@ allow_ship = true
 # Upgrade the control plane first.
 # Versions before 0.2.0-rc6 refuse this key: remove it before a rollback.
 # agent_postgres = "/usr/lib/postgresql/15/bin"
+
+# Where this file is edited when a host manager such as Deploybot owns it:
+# an https URL, at most 512 characters, no user or password. The console
+# links to it ("Managed in Deploybot -> Edit"); unset means edited on the host.
+# Versions before 0.2.0-rc6 refuse this key: remove it before a rollback.
+# managed_url = "https://deploybot.example.com/hosts/<host>/files/policy"

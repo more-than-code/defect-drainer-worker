@@ -3,8 +3,10 @@ package workerproto
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 var (
@@ -23,6 +25,18 @@ func ValidSHA256(s string) bool { return sha256Re.MatchString(s) }
 
 // ValidModel reports whether s may be passed to an agent CLI as a model (§6.5).
 func ValidModel(s string) bool { return modelRe.MatchString(s) && !strings.HasPrefix(s, "-") }
+
+// ValidManagedURL reports whether s may be policy managed_url (§4.1): an
+// https URL with a host, at most MaxManagedURL bytes, no user or password,
+// and no space or control character. The worker refuses any other value and
+// a server drops one before showing it as a link.
+func ValidManagedURL(s string) bool {
+	if s == "" || len(s) > MaxManagedURL || strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		return false
+	}
+	u, err := url.Parse(s)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.Opaque == ""
+}
 
 // ModelAllowed is the allowed_models rule, shared by the worker (which
 // enforces it) and a scheduler (which can skip a worker that would decline).

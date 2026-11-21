@@ -139,6 +139,12 @@ type Policy struct {
 	// Additive in 0.2.0-rc6 (job stack, S8): policy agent_postgres,
 	// the directory of the host's Postgres binaries ("": off).
 	Postgres string `json:"postgres,omitempty"`
+	// Additive in 0.2.0-rc6: Hash is the sha256 (hex) of the policy.toml
+	// bytes the worker loaded, valid or not ("": no file); ManagedURL is
+	// policy managed_url, where the host's manager edits the file, sent
+	// only with a valid policy.
+	Hash       string `json:"hash,omitempty"`
+	ManagedURL string `json:"managed_url,omitempty"`
 }
 
 type Hello struct {

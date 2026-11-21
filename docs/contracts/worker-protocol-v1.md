@@ -319,6 +319,10 @@ These close the local-only assumptions in W1a's seam. The `local` transport keep
     - `AgentRun.costByModel`, `Review.costByModel` and each lens's `costByModel` (object, optional): `{"<model>": {"costUsd": number, "inputTokens": number, "outputTokens": number}}`. From Claude's result `modelUsage`, keyed by `canonicalModel` when present, else the map key; `inputTokens` excludes cache reads and writes. Cost no model was reported for (grok, a prior record from before rc4, a key that isn't a valid model name) is under `"unknown"`, so the values sum to `totalCostUsd`. `AgentRun.costByModel` is cumulative across iterations, Resumes and Reruns, like `totalCostUsd`; `Review.costByModel` sums the lenses. The cost cap stays on the total.
 
 11. **Verify a submitted ref (worker after 0.2.0-rc4, additive, `verify_submitted.v1`, §16):** `JobSpec.mode` gains `verify_submitted`; `JobSpec` gains `submittedRefs` and the worker-derived `baselineWorktrees`; `Status` gains `submittedHeads`.
+12. **Policy version and manager link (worker 0.2.0-rc6, additive; old peers ignore every field under §2):**
+    - Hello and status `policy` gain `hash` (64 lowercase hex): the sha256 of the `policy.toml` bytes the worker loaded, sent whenever it read the file, valid or not, so a server can show the policy version and a host manager can compare it with the file it applied. Omitted when there is no file.
+    - They gain `managed_url` (string): policy `managed_url`, where a host manager edits the file (https only, a host, at most 512 bytes, no user or password, no space or control character; `workerproto.ValidManagedURL`). Sent only with a valid policy; omitted when unset. Display only: a server drops a value that fails the same rule before showing it as a link.
+    - No hash or other fact of `secrets.env` is ever reported.
 
 ## 9. Errors and job reasons
 
@@ -359,6 +363,8 @@ Additive in 0.2.0-rc3 (§15): `bad_agent_browser` (not an absolute, clean path; 
 Additive in 0.2.0-rc4: `bad_allowed_models` (an empty list, an empty or invalid name, a duplicate, or more than 16). A worker before 0.2.0-rc4 reports the key as `unknown_key`.
 
 Additive in 0.2.0-rc6 (§17): `bad_agent_postgres` (not an absolute, clean path; or an existing directory that isn't owned by root or is group- or world-writable, or whose `initdb`, `pg_ctl` or `postgres` isn't a regular executable owned by root and writable only by root). A worker before 0.2.0-rc6 reports the key as `unknown_key`.
+
+Additive in 0.2.0-rc6: `bad_managed_url` (not an https URL with a host, longer than 512 bytes, with a user or password, or with a space or control character). A worker before 0.2.0-rc6 reports the key as `unknown_key`. The reasons above are what the hello `policy` block carries; `dd-worker policy check --file` prints each as one `bad_*` line, adding the prefix to the ones without it (`bad_parse`, `bad_unknown_key`, `bad_orgs_empty`, `bad_not_root`, `bad_group_writable`, `bad_world_writable`); see the host setup guide.
 
 ## 10. Capabilities
 

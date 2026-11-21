@@ -3,6 +3,7 @@ package worker
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"sort"
@@ -37,14 +38,12 @@ func LoadSecrets(path string, uid func(os.FileInfo) (uint32, bool)) (Secrets, er
 	if err != nil {
 		return Secrets{}, errors.New("secrets.env cannot be read")
 	}
-	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+	switch secretsFileReason(fi, uid) {
+	case "bad_symlink", "bad_not_regular":
 		return Secrets{}, errors.New("secrets.env must be a regular file")
-	}
-	if fi.Mode().Perm()&0o077 != 0 {
+	case "bad_mode":
 		return Secrets{}, errors.New("secrets.env must not be group- or world-accessible (chmod 0600)")
-	}
-	owner, ok := ownerUID(fi, uid)
-	if !ok || (owner != 0 && int(owner) != os.Geteuid()) {
+	case "bad_owner":
 		return Secrets{}, errors.New("secrets.env must be owned by root or the worker user")
 	}
 	body, err := os.ReadFile(path)
@@ -62,6 +61,74 @@ func LoadSecrets(path string, uid func(os.FileInfo) (uint32, bool)) (Secrets, er
 		}
 	}
 	return Secrets{vals: out}, nil
+}
+
+// secretsFileReason is the file rule for secrets.env as a check reason, ""
+// when it passes: a regular file (not a symlink) with no group or world
+// bits, owned by root or by this process's user.
+func secretsFileReason(fi os.FileInfo, uid func(os.FileInfo) (uint32, bool)) string {
+	switch {
+	case fi.Mode()&os.ModeSymlink != 0:
+		return "bad_symlink"
+	case !fi.Mode().IsRegular():
+		return "bad_not_regular"
+	case fi.Mode().Perm()&0o077 != 0:
+		return "bad_mode"
+	}
+	owner, ok := ownerUID(fi, uid)
+	if !ok || (owner != 0 && int(owner) != os.Geteuid()) {
+		return "bad_owner"
+	}
+	return ""
+}
+
+// MaxSecretsBytes bounds a secrets.env candidate (the parser's line limit).
+const MaxSecretsBytes = 64 * 1024
+
+// CheckSecretsData checks a candidate secrets.env's content (dd-worker
+// secrets check): it parses, every name is a ValidEnvName, and no name
+// repeats. It returns "" or a bad_* reason and never a value.
+func CheckSecretsData(data []byte) string {
+	if len(data) > MaxSecretsBytes {
+		return "bad_format"
+	}
+	keys, err := config.EnvKeys(data)
+	if err != nil {
+		return "bad_format"
+	}
+	seen := map[string]bool{}
+	for _, k := range keys {
+		if !ValidEnvName(k) {
+			return "bad_name"
+		}
+		if seen[k] {
+			return "bad_duplicate"
+		}
+		seen[k] = true
+	}
+	return ""
+}
+
+// CheckSecretsFile checks path with LoadSecrets' file rule, then its
+// content. err is set when the file cannot be read (missing included).
+func CheckSecretsFile(path string, uid func(os.FileInfo) (uint32, bool)) (reason string, err error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if r := secretsFileReason(fi, uid); r != "" {
+		return r, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, MaxSecretsBytes+1))
+	if err != nil {
+		return "", err
+	}
+	return CheckSecretsData(data), nil
 }
 
 func ownerUID(fi os.FileInfo, override func(os.FileInfo) (uint32, bool)) (uint32, bool) {

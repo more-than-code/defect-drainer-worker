@@ -5,7 +5,9 @@
 //	dd-worker init --server <origin> --join-token-stdin
 //	dd-worker run
 //	dd-worker status
-//	dd-worker policy check [--syntax-only]
+//	dd-worker policy check [--syntax-only] [--file <path|->]
+//	dd-worker secrets check --file <path|->
+//	dd-worker health --wait <dur> | --idle
 //
 // Every command takes --config-dir (default /etc/dd-worker) and --state-dir
 // (default /var/lib/dd-worker).
@@ -19,6 +21,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -39,6 +42,15 @@ const (
 	exitUsage   = 2
 	exitRevoked = 3
 	exitFatal   = 4 // replaced, protocol or org mismatch: the owner must act
+)
+
+// Exit codes of the candidate checks (policy check --file, secrets check)
+// and of health, a contract a host manager such as Deploybot relies on
+// (docs/host-setup.md): usage and I/O errors are exitFail.
+const (
+	exitInvalid   = 2 // one bad_* line on stderr
+	exitUnhealthy = 3 // health --wait timed out; one reason line on stderr
+	exitBusy      = 4 // health --idle: a job is running
 )
 
 func main() {
@@ -65,7 +77,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			usage(stderr)
 			return exitUsage
 		}
-		return cmdPolicyCheck(args[2:], stdout, stderr)
+		return cmdPolicyCheck(args[2:], stdin, stdout, stderr)
+	case "secrets":
+		if len(args) < 2 || args[1] != "check" {
+			usage(stderr)
+			return exitFail
+		}
+		return cmdSecretsCheck(args[2:], stdin, stdout, stderr)
+	case "health":
+		return cmdHealth(args[1:], stderr)
 	case "shot":
 		return cmdShot(args[1:], stdout, stderr)
 	case "version", "--version":
@@ -85,7 +105,9 @@ func usage(w io.Writer) {
   dd-worker init --server <https origin> --join-token-stdin [--insecure-dev]
   dd-worker run [--claude-bin P] [--claude-config-dir D] [--grok-bin P] [--grok-home D] [--agy-bin P] [--agy-home D]
   dd-worker status
-  dd-worker policy check [--syntax-only]
+  dd-worker policy check [--syntax-only] [--file <path|->]
+  dd-worker secrets check --file <path|->
+  dd-worker health --wait <duration> | --idle
 common flags: --config-dir (default /etc/dd-worker) --state-dir (default /var/lib/dd-worker)
 init runs as the worker user, never root (sudo -u dd-worker dd-worker init ...)
 `)
@@ -243,25 +265,55 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	return code
 }
 
-func cmdPolicyCheck(args []string, stdout, stderr io.Writer) int {
+func cmdPolicyCheck(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("policy check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	p := pathFlags(fs)
-	file := fs.String("file", "", "policy file (default <config-dir>/policy.toml)")
+	file := fs.String("file", "", "candidate policy file, or - for stdin (exit 0 valid, 2 one bad_* line on stderr, 1 usage or I/O)")
 	syntaxOnly := fs.Bool("syntax-only", false, "skip the root-owner and mode checks (a file not yet installed)")
 	if err := fs.Parse(args); err != nil {
+		if namesFileFlag(args) {
+			return exitFail
+		}
 		return exitUsage
 	}
-	path := *file
-	if path == "" {
-		path = p.Policy()
+	if *file == "" {
+		// Without --file: today's check of the installed policy.
+		path := p.Policy()
+		pol := worker.LoadPolicy(path, *syntaxOnly, nil)
+		if !pol.Valid {
+			fmt.Fprintf(stdout, "%s: invalid (%s)\n", path, pol.Reason)
+			return exitFail
+		}
+		fmt.Fprintf(stdout, "%s: valid (enabled=%v, sha256 %s)\n", path, pol.Enabled, pol.Hash)
+		return exitOK
 	}
-	pol := worker.LoadPolicy(path, *syntaxOnly, nil)
-	if !pol.Valid {
-		fmt.Fprintf(stdout, "%s: invalid (%s)\n", path, pol.Reason)
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "policy check: unexpected arguments")
 		return exitFail
 	}
-	fmt.Fprintf(stdout, "%s: valid (enabled=%v, sha256 %s)\n", path, pol.Enabled, pol.Hash)
+	var pol worker.Policy
+	name := *file
+	if name == "-" {
+		data, err := readCandidate(stdin, policyMaxBytes)
+		if err != nil {
+			fmt.Fprintln(stderr, "policy check: cannot read stdin")
+			return exitFail
+		}
+		name = "stdin"
+		pol = worker.CheckPolicyData(data)
+	} else {
+		pol = worker.LoadPolicy(name, *syntaxOnly, nil)
+		if !pol.Exists || pol.Reason == "unreadable" {
+			fmt.Fprintf(stderr, "policy check: cannot read %s\n", name)
+			return exitFail
+		}
+	}
+	if !pol.Valid {
+		fmt.Fprintln(stderr, badReason(pol.Reason))
+		return exitInvalid
+	}
+	fmt.Fprintf(stdout, "%s: valid (enabled=%v, sha256 %s)\n", name, pol.Enabled, pol.Hash)
 	return exitOK
 }
 
@@ -296,4 +348,117 @@ func cmdShot(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	return shot.Run(ctx, shot.Options{Browser: *browser, SignIn: si, Def: *def, Dir: *dir, After: *after,
 		AppURL: strings.TrimSuffix(*appURL, "/"), Paths: fs.Args(), Timeout: time.Duration(*timeout) * time.Second, Out: stdout})
+}
+
+// policyMaxBytes is one more than a policy may hold, so an oversized
+// candidate reaches the parser and is refused there.
+const policyMaxBytes = 64*1024 + 1
+
+func cmdSecretsCheck(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("secrets check", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	file := fs.String("file", "", "candidate secrets.env, or - for stdin (exit 0 valid, 2 one bad_* line on stderr, 1 usage or I/O)")
+	if err := fs.Parse(args); err != nil {
+		return exitFail
+	}
+	if *file == "" || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "secrets check needs --file <path|->")
+		return exitFail
+	}
+	var reason string
+	if *file == "-" {
+		data, err := readCandidate(stdin, worker.MaxSecretsBytes+1)
+		if err != nil {
+			fmt.Fprintln(stderr, "secrets check: cannot read stdin")
+			return exitFail
+		}
+		reason = worker.CheckSecretsData(data)
+	} else {
+		r, err := worker.CheckSecretsFile(*file, nil)
+		if err != nil {
+			fmt.Fprintf(stderr, "secrets check: cannot read %s\n", *file)
+			return exitFail
+		}
+		reason = r
+	}
+	if reason != "" {
+		fmt.Fprintln(stderr, badReason(reason))
+		return exitInvalid
+	}
+	fmt.Fprintln(stdout, "secrets: valid")
+	return exitOK
+}
+
+// healthPoll is how often health --wait re-reads the status file.
+var healthPoll = 500 * time.Millisecond
+
+// maxHealthWait bounds health --wait.
+const maxHealthWait = 10 * time.Minute
+
+func cmdHealth(args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("health", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	p := pathFlags(fs)
+	wait := fs.Duration("wait", 0, "wait up to this long for a running, connected worker with a valid, enabled policy (exit 0, or 3 and one reason line)")
+	idle := fs.Bool("idle", false, "exit 4 (busy) while any job is running, else 0")
+	if err := fs.Parse(args); err != nil {
+		return exitFail
+	}
+	if fs.NArg() != 0 || (*wait != 0) == *idle || *wait < 0 || *wait > maxHealthWait {
+		fmt.Fprintln(stderr, "health needs exactly one of --wait <duration> (up to 10m) or --idle")
+		return exitFail
+	}
+	if *idle {
+		if worker.Busy(*p) {
+			fmt.Fprintln(stderr, "busy")
+			return exitBusy
+		}
+		return exitOK
+	}
+	deadline := time.Now().Add(*wait)
+	for {
+		reason := worker.HealthReason(*p)
+		if reason == "" {
+			return exitOK
+		}
+		if !time.Now().Add(healthPoll).Before(deadline) {
+			fmt.Fprintln(stderr, reason)
+			return exitUnhealthy
+		}
+		time.Sleep(healthPoll)
+	}
+}
+
+// readCandidate reads at most limit bytes of a candidate from r.
+func readCandidate(r io.Reader, limit int64) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(r, limit))
+}
+
+// badReasonRe is the reason line contract of the candidate checks.
+var badReasonRe = regexp.MustCompile(`^bad_[a-z0-9_]{1,64}$`)
+
+// badReason is a check reason as its bad_* line: reasons the worker reports
+// without the prefix (parse, unknown_key, orgs_empty, not_root, ...) gain it.
+func badReason(reason string) string {
+	if !strings.HasPrefix(reason, "bad_") {
+		reason = "bad_" + reason
+	}
+	if !badReasonRe.MatchString(reason) {
+		return "bad_unknown"
+	}
+	return reason
+}
+
+// namesFileFlag reports whether args use --file, so a usage error follows
+// the candidate-check contract (exit 1) instead of policy check's own.
+func namesFileFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if n := strings.TrimLeft(a, "-"); a != n && (n == "file" || strings.HasPrefix(n, "file=")) {
+			return true
+		}
+	}
+	return false
 }

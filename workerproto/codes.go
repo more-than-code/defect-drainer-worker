@@ -89,6 +89,7 @@ const (
 	SpoolEndedJobTTL     = 24 * time.Hour
 	MaxAdapters          = 8
 	MaxAllowedModels     = 16
+	MaxManagedURL        = 512 // policy managed_url, bytes
 	MaxTools             = 8
 	MaxBlobsPerJob       = 200
 	MaxBlobBytesPerJob   = 100 << 20
