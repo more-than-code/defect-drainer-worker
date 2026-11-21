@@ -37,6 +37,7 @@ Worker = {
 - **Who sees what:** members see the list read-only; admins and owners see the actions. A worker of another org is 404.
 - **Never exposed:** `machine_id_hash`, credential hashes and job tokens.
 - **`tools`** (added 2026-11-17, N5): the git and gh readiness from the worker's last `hello` or `status` ([worker protocol](worker-protocol-v1.md) §4.1); `reason` is one of `missing`, `too_old`, `signed_out`, `no_git_helper` and is left out when empty. **Omitted** when the worker never reported tools (an older `dd-worker`): the console shows "tools unknown". Display only; scheduling ignores it.
+- **`policy`** is the worker's last reported policy for display, without `orgs` (another org's ids never reach this org's members). Added 2026-11-21 (WP-a): `max_turns` and `max_wall_sec` (ints; 0 means not reported: never connected, or an invalid policy). Added 2026-11-22 (WP-b, worker 0.2.0-rc6): `hash` (the sha256 of the host's `policy.toml`, 64 lowercase hex, shown as the policy version) and `managed_url` (where a host manager such as Deploybot edits the file: https only, at most 512 bytes; serve drops any other value). Both are **omitted** when the worker didn't report them (before 0.2.0-rc6, or `managed_url` unset); the console then says "not reported by this worker version" or "Edited on the host".
 - **`capabilities`** (added 2026-11-17, N6a): the capabilities from the worker's last `hello` ([worker protocol](worker-protocol-v1.md) §10, §14), sorted. **Omitted** until the worker says hello to a server that records them. A list without `gittoken.v1` means the worker gets no offers: the console shows "update dd-worker". A list without `verify_submitted.v1` (a worker after 0.2.0-rc4) means the worker is never offered a job that verifies a submitted ref ([worker protocol](worker-protocol-v1.md) §16).
 - **Errors:**
   - 403 `forbidden` for a member writing;
@@ -97,12 +98,15 @@ Worker = {
 |---|---|---|---|
 | `GET /api/orgs/{org}/github` | member (read) | — | `200 GitHubStatus` |
 | `POST /api/orgs/{org}/github/install` | admin | `{}` | `200 {"url":"https://github.com/apps/<slug>/installations/new?state=…"}`. The state is single-use, lives 10 minutes, is bound to this org and user, and is held in serve's memory as a SHA-256 only (a restart drops it) |
-| `POST /api/orgs/{org}/github/check` | admin | `{}` | `200 GitHubStatus` after re-reading the installation: `state` becomes `active`, `suspended` or `gone` |
-| `DELETE /api/orgs/{org}/github` | admin | — | `200 {"ok":true}`. Audit `github.disconnect`. The App stays installed on GitHub |
+| `POST /api/orgs/{org}/github/installations/{id}/check` | admin | `{}` | `200 GitHubStatus` after re-reading that installation: its `state` becomes `active`, `suspended` or `gone`; no other installation is touched (GH-a, 2026-11-22) |
+| `DELETE /api/orgs/{org}/github/installations/{id}` | admin | — | `200 {"ok":true}`. Audit `github.disconnect` with the installation id. The App stays installed on GitHub (GH-a) |
+| `POST /api/orgs/{org}/github/check` | admin | `{}` | **Deprecated** (GH-a): the org's only installation's check; 409 `github_installation_ambiguous` when the org has two or more |
+| `DELETE /api/orgs/{org}/github` | admin | — | **Deprecated** (GH-a): the org's only installation's Disconnect; 409 `github_installation_ambiguous` when the org has two or more |
 
 ```json
 GitHubStatus = {
   "configured": true, "appSlug": "defect-drainer",
+  "installations": [{"installation": Installation, "access": {"all": false, "repos": ["acme/web"]}, "accessError": ""}],
   "installation": {"orgId":"org_…","installationId":12345678,"accountLogin":"acme","accountType":"Organization",
                    "installedBy":"usr_…","createdAt":"…","verifiedAt":"…","state":"active"},
   "access": {"all": false, "repos": ["acme/web"]},
@@ -111,7 +115,8 @@ GitHubStatus = {
 ```
 
 **Rules:**
-- `configured:false` (no App env on this serve): `installation`/`access` are null, install is 409 `github_app_not_configured`.
+- **Several installations per org** (GH-a, 2026-11-22): `installations` lists every one, oldest first, each with its own `access` and `accessError`; an org holds at most one per GitHub account. `Installation` is the object shown under `installation`, plus `accountId` (GitHub's account id, absent for rows saved before GH-a). The top-level `installation`, `access` and `accessError` are **deprecated** for one release: the first installation's fields.
+- `configured:false` (no App env on this serve): `installations` is `[]`, `installation`/`access` are null, install is 409 `github_app_not_configured`.
 - `installation` is null when the org has none. `access` is read live from GitHub (`GET /installation/repositories`, capped at 1000) only for an `active` installation; when GitHub fails it is null and `accessError` holds the code.
 - No token of any kind is ever returned or stored.
 - **The setup callback** is `GET /auth/github/setup` (`saas-auth.md` (a control-plane design doc, not published) §3): success is `303 /settings/github?github=installed`. A valid state with an `installation_id` but no `code` (the App was already installed) is `303` to GitHub's `/login/oauth/authorize?client_id&state` with a fresh state bound to that installation; the authorize callback carries only `code` and `state`; a refusal is a short HTML page with the status below and a link to `/settings/github?github_error=<code>`:
@@ -119,7 +124,8 @@ GitHubStatus = {
   - 403 `forbidden` (no longer admin), `github_installation_not_yours` (the id is not in the user's `GET /user/installations`; audited, nothing saved);
   - 409 `github_app_not_configured`, `github_not_installed`, `github_installation_taken` (another DD org holds that installation);
   - 502 `github_unavailable`.
-- **Errors** on the org routes: 403 `forbidden` for a member writing; 404 `github_not_installed` for check or disconnect with no installation; 409 `github_app_not_configured`; 502 `github_unavailable`.
+- **Errors** on the org routes: 403 `forbidden` for a member writing; 404 `github_not_installed` for check or disconnect with no installation, or an `{id}` this org doesn't hold (another org's included); 409 `github_installation_ambiguous` (the deprecated org-level check or disconnect with two or more installations); 409 `github_app_not_configured`; 502 `github_unavailable`.
+- **Which installation a job uses** (GH-a): the org's active installation for the repo's owner (the GitHub account, ignoring case). Starting a remote fix or Resume on a repo whose owner has none is 409 `github_not_installed_for_owner`, its reason naming the owner; the worker's git token request is still refused with `github_not_installed` on the wire.
 - **Branch listing** (`POST /api/git/branches`) in `AUTH=oidc` uses the App for `https://github.com/<owner>/<repo>`, default branch first: 400 `repo_not_installed` when none of the caller's orgs' active installations reaches it, 400 `repo_not_github` for other URLs, 400 `github_app_not_configured` without an App, 502 `github_unavailable`. `AUTH=none` still runs git.
 
 ## 7. Worker browser (worker 0.2.0-rc3, additive)

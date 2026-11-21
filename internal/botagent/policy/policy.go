@@ -38,16 +38,22 @@ type File struct {
 // The override does not affect the mode check.
 // SkipOwner skips the root-owner and mode checks (a "policy check" of a
 // file before it is installed).
+// Data, when not nil, is the policy's bytes (a candidate read from stdin):
+// Policy is not opened and the owner and mode checks are skipped.
 type Files struct {
 	Policy    string
 	Schema    Schema
 	UID       func(os.FileInfo) (uint32, bool)
 	SkipOwner bool
+	Data      []byte
 }
 
 // Load reads the policy. A missing file returns a zero File (Exists false).
 // It does not return an error: a missing or invalid policy disables work.
 func Load(f Files) File {
+	if f.Data != nil {
+		return parseData(f.Data, f.Schema)
+	}
 	fh, err := os.Open(f.Policy)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -89,6 +95,24 @@ func Load(f Files) File {
 		}
 	}
 	values, reason := parseTOML(data, f.Schema)
+	if reason != "" {
+		out.Reason = reason
+		return out
+	}
+	out.Valid = true
+	out.Values = values
+	return out
+}
+
+// parseData checks bytes the caller already holds: the size cap, the hash
+// and the parser, as Load does after its file checks.
+func parseData(data []byte, schema Schema) File {
+	out := File{Exists: true, Hash: hashBytes(data)}
+	if len(data) > MaxBytes {
+		out.Reason = "parse"
+		return out
+	}
+	values, reason := parseTOML(data, schema)
 	if reason != "" {
 		out.Reason = reason
 		return out
