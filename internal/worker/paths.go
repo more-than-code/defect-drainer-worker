@@ -61,6 +61,12 @@ func (p Paths) Evidence(id string) string     { return filepath.Join(p.JobDir(id
 func (p Paths) Blobs(id string) string        { return filepath.Join(p.JobDir(id), "blobs") }
 func (p Paths) JobMeta(id string) string      { return filepath.Join(p.JobDir(id), "job.json") }
 
+// JobStackSecrets holds the job stack values of every run of the job
+// (stacksecrets.go).
+func (p Paths) JobStackSecrets(id string) string {
+	return filepath.Join(p.JobDir(id), "stack-secrets.json")
+}
+
 // SpoolRoot is the dir the spool package puts its "spool" dir in.
 func (p Paths) SpoolRoot(id string) string { return p.JobDir(id) }
 

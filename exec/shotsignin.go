@@ -34,7 +34,7 @@ type ShotSignIn struct {
 func NewShotSignIn(a ProjectSettings, vals map[string]string) ShotSignIn {
 	si := a.JobStackSignIn
 	origin := a.AppOrigin()
-	out := ShotSignIn{Method: si.Method, URL: origin + si.URL, Email: si.Email, Password: si.Password, Form: si.Form}
+	out := ShotSignIn{Method: si.Method, URL: origin + si.URL, Email: si.Email, Password: si.PasswordFor(vals[PlaceholderRandom]), Form: si.Form}
 	if si.HTTP != nil {
 		out.HTTPMethod, out.HTTPURL = si.HTTP.Method, origin+si.HTTP.Path
 		out.HTTPBody = fillPlaceholders(si.HTTP.BodyTemplate, vals, jsonEscape)

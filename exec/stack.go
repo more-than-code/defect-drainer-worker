@@ -105,8 +105,8 @@ type SignInCall struct {
 func (a ProjectSettings) AppOrigin() string { return strings.TrimSuffix(a.PreviewURL, "/") }
 
 // SignInValues are the {signin.*} placeholder values, or nil without a
-// Stack sign-in.
-func (a ProjectSettings) SignInValues() map[string]string {
+// Stack sign-in. random is the run's {random} value.
+func (a ProjectSettings) SignInValues(random string) map[string]string {
 	si := a.JobStackSignIn
 	if si == nil {
 		return nil
@@ -114,8 +114,21 @@ func (a ProjectSettings) SignInValues() map[string]string {
 	return map[string]string{
 		PlaceholderSignInURL:      a.AppOrigin() + si.URL,
 		PlaceholderSignInEmail:    si.Email,
-		PlaceholderSignInPassword: si.Password,
+		PlaceholderSignInPassword: si.PasswordFor(random),
 	}
+}
+
+// GeneratedPassword reports whether the password is generated per run
+// (signin_random.v1): exactly "{random}". Any other text is a literal.
+func (si StackSignIn) GeneratedPassword() bool { return si.Password == PlaceholderRandom }
+
+// PasswordFor is the password a run uses: its {random} value when the
+// password is generated, else the literal.
+func (si StackSignIn) PasswordFor(random string) string {
+	if si.GeneratedPassword() {
+		return random
+	}
+	return si.Password
 }
 
 // placeholderRe is any {token} of letters, digits and . _ : -: the shape a

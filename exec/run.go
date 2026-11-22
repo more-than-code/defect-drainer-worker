@@ -219,9 +219,18 @@ func (r *run) writeDDStack() error {
 		return err
 	}
 	s := r.spec
-	r.stackSecrets = secretForms(random)
-	if si := s.Project.JobStackSignIn; si != nil {
-		r.stackSecrets = append(r.stackSecrets, secretForms(si.Password)...)
+	values := []string{random}
+	if si := s.Project.JobStackSignIn; si != nil && !si.GeneratedPassword() {
+		values = append(values, si.Password)
+	}
+	if r.hooks.StackSecrets != nil {
+		if err := r.hooks.StackSecrets(values); err != nil {
+			return err
+		}
+	}
+	r.stackSecrets = nil
+	for _, v := range values {
+		r.stackSecrets = append(r.stackSecrets, secretForms(v)...)
 	}
 	dirs := map[string]string{}
 	for _, w := range s.Worktrees {
@@ -230,7 +239,7 @@ func (r *run) writeDDStack() error {
 	c := DDStack{
 		Services: s.Project.JobStack, PreviewEnv: s.Project.PreviewEnv, Dirs: dirs,
 		Postgres: r.host.Postgres, TimeoutSec: s.Project.PreviewTimeout(), Random: random,
-		SignIn: s.Project.SignInValues(),
+		SignIn: s.Project.SignInValues(random),
 	}
 	if err := WriteDDStack(s.Handoff, c); err != nil {
 		return err

@@ -881,6 +881,8 @@ func validateSignIn(a exec.ProjectSettings, names map[string]bool) error {
 		return errors.New("jobStackSignIn: invalid successPath")
 	case !oneLine(si.Email, 1, exec.MaxSignInEmail):
 		return errors.New("jobStackSignIn: invalid email")
+	case si.GeneratedPassword():
+		// signin_random.v1: exactly "{random}", filled with the run's value.
 	case !oneLine(si.Password, exec.MinSignInPassword, exec.MaxSignInPassword):
 		return fmt.Errorf("jobStackSignIn: the password must be one line of %d–%d bytes", exec.MinSignInPassword, exec.MaxSignInPassword)
 	}

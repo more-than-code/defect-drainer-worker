@@ -424,6 +424,12 @@ func TestValidateSignIn(t *testing.T) {
 		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.HTTP.BodyTemplate = "" },
 		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.HTTP.Method = "PUT" },
 		func(s *dexec.JobSpec) { s.Project.JobStack[0].Env["PW"] = "{signin.password}" },
+		// signin_random.v1: exactly "{random}" is generated; other braces
+		// are a literal under the 8–256 rule.
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Password = "{random}" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Password = "{random}x" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Password = "x{random}" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Password = "{signin.password}" },
 	}
 	for i, m := range ok {
 		s := signInSpec("bjob_si_ok")
@@ -440,6 +446,7 @@ func TestValidateSignIn(t *testing.T) {
 		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Email = "" },
 		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Email = "a\nb@example.com" },
 		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Password = "short" },
+		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Password = "{rand}" },
 		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Password = strings.Repeat("p", 257) },
 		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Password = "pass\nword-long" },
 		func(s *dexec.JobSpec) { s.Project.JobStackSignIn.Method = "oauth" },
@@ -554,6 +561,84 @@ func TestSignInJobEndToEnd(t *testing.T) {
 	}
 	ship := dexec.Control{Kind: dexec.ControlShip, Repos: []dexec.ShipRepo{{Repo: "app", Files: []string{"README.md"}, Message: "Fix", Title: "Fix"}}}
 	if r = h.controlAndWait(spec.JobID, "rq_si_ship", ship, 1); r.OK || r.Code != workerproto.ReasonPolicyDenied || !strings.Contains(r.Detail, "Stack sign-in password") {
+		t.Fatalf("ship %+v", r)
+	}
+}
+
+// signin_random.v1 through the real worker loop: a password of exactly
+// "{random}" is the run's {random} value in dd-stack's env and dd-shot's
+// sign-in. An agent that copies it into the code and its notes: no event,
+// blob or agent.log shows it, the diff check flags it, and the diff view
+// hides it and ship refuses, also after a worker restart.
+func TestGeneratedSignInPasswordEndToEnd(t *testing.T) {
+	browser := fakeBrowser(t, t.TempDir())
+	pg := fakePostgres(t)
+	agent := "pw=$(sed -n \"s/^[[:space:]]*export DD_SIGNIN_PASSWORD='\\(.*\\)'$/\\1/p\" " + dexec.DDStackName + " | head -n 1)\n" +
+		"echo \"password $pw\" >> ../worktrees/app/README.md\n" +
+		"echo \"tried $pw\" >&2\n" + fixArtifacts(testDefect) +
+		"printf 'signed in with %s' \"$pw\" > fix-notes/" + testDefect + ".md\n" +
+		"cat '" + claudeFixture(t, "c1-basic") + "'\nexit 0\n"
+	h := newHarness(t, harnessOpts{agent: agent,
+		policy: defaultPolicy + "agent_browser = \"" + browser + "\"\nagent_postgres = \"" + pg + "\"\n"})
+	root, _ := scanRoot(t)
+	readyBrowser(h, root, true)
+	setPostgresTool(h, true)
+	spec := signInSpec("bjob_si_gen")
+	spec.Project.JobStackSignIn.Password = dexec.PlaceholderRandom
+	spec.Project.JobStack[0].Env["SEED_USER_PASSWORD"] = "{signin.password}"
+	h.offerJob(spec, nil)
+	h.waitDone(spec.JobID, 60*time.Second)
+	handoff := h.paths.Handoff(spec.JobID)
+
+	recorded, err := readStackSecrets(h.paths.JobStackSecrets(spec.JobID))
+	if err != nil || len(recorded) != 1 || len(recorded[0]) != 64 {
+		t.Fatalf("recorded %q %v", recorded, err)
+	}
+	pw := recorded[0]
+	if fi, err := os.Stat(h.paths.JobStackSecrets(spec.JobID)); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("stack-secrets.json: %v %v", err, fi)
+	}
+	stack, _ := os.ReadFile(filepath.Join(handoff, dexec.DDStackName))
+	for _, want := range []string{"export DD_SIGNIN_PASSWORD='" + pw + "'", "export SEED_USER_PASSWORD='" + pw + "'"} {
+		if !strings.Contains(string(stack), want) {
+			t.Fatalf("dd-stack lacks %q", want)
+		}
+	}
+	si, err := dexec.ReadShotSignIn(filepath.Join(handoff, dexec.ShotSignInName))
+	if err != nil || si.Password != pw || !strings.Contains(si.HTTPBody, `"password":"`+pw+`"`) {
+		t.Fatalf("sign-in file %+v %v", si, err)
+	}
+	if readme, _ := os.ReadFile(filepath.Join(h.paths.WorktreeRoot(spec.JobID), "app", "README.md")); !strings.Contains(string(readme), "password "+pw) {
+		t.Fatal("the agent did not copy the value: the test proves nothing")
+	}
+
+	h.fs.mu.Lock()
+	j := h.fs.jobs[spec.JobID]
+	raw, _ := json.Marshal(j.events)
+	var blobs []byte
+	for _, b := range j.blobs {
+		blobs = append(blobs, b...)
+	}
+	h.fs.mu.Unlock()
+	if strings.Contains(string(raw)+string(blobs), pw) {
+		t.Fatal("an event or blob shows the generated password")
+	}
+	if !strings.Contains(string(raw), "tried [redacted]") || !strings.Contains(string(raw), `"stackSecret":true`) {
+		t.Fatalf("events:\n%s", raw)
+	}
+	if log, _ := os.ReadFile(filepath.Join(handoff, "agent.log")); strings.Contains(string(log), pw) {
+		t.Fatal("agent.log shows the generated password")
+	}
+
+	h.stop()
+	h.start(Timing{})
+	r := h.controlAndWait(spec.JobID, "rq_sig_diff", dexec.Control{Kind: dexec.ControlDiff, Repo: "app"}, 1)
+	var diff workerproto.DiffResult
+	if !r.OK || json.Unmarshal(r.Result, &diff) != nil || strings.Contains(diff.Diff, pw) || !strings.Contains(diff.Diff, "password [redacted]") {
+		t.Fatalf("diff %+v %q", r, diff.Diff)
+	}
+	ship := dexec.Control{Kind: dexec.ControlShip, Repos: []dexec.ShipRepo{{Repo: "app", Files: []string{"README.md"}, Message: "Fix", Title: "Fix"}}}
+	if r = h.controlAndWait(spec.JobID, "rq_sig_ship", ship, 1); r.OK || r.Code != workerproto.ReasonPolicyDenied || !strings.Contains(r.Detail, "Stack sign-in password") {
 		t.Fatalf("ship %+v", r)
 	}
 }

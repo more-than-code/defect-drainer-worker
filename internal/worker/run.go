@@ -128,7 +128,7 @@ func (j *job) launch(d decision, leaseID string) {
 	if spec.Project.JobStackSignIn != nil {
 		eh.ShotBin = shotBin()
 	}
-	out, err := exec.Start(ctx, eh, spec, runSink{j: j, gen: gen}, exec.Hooks{})
+	out, err := exec.Start(ctx, eh, spec, runSink{j: j, gen: gen}, exec.Hooks{StackSecrets: j.recordStackSecrets})
 	if err != nil {
 		j.fail(gen, withCode(err))
 		return

@@ -182,8 +182,18 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 			return fail(workerproto.CodeInternal, err.Error())
 		}
 		d = w.currentRedactor().Values(d)
-		if si := meta.Spec.Project.JobStackSignIn; si != nil && si.Password != "" {
-			d = strings.ReplaceAll(d, si.Password, "[redacted]")
+		// §17: the job stack values never leave in a diff: the typed
+		// sign-in password, and every run's {random} value (also a
+		// generated password), as the runs recorded them.
+		secrets, err := j.stackSecrets()
+		if err != nil {
+			return fail(workerproto.CodeInternal, "job stack values: "+err.Error())
+		}
+		if si := meta.Spec.Project.JobStackSignIn; si != nil && si.Password != "" && !si.GeneratedPassword() {
+			secrets = append(secrets, si.Password)
+		}
+		for _, v := range secrets {
+			d = strings.ReplaceAll(d, v, "[redacted]")
 		}
 		truncated := false
 		if len(d) > workerproto.MaxDiffBytes {
@@ -224,15 +234,19 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 				return fail(workerproto.DeclineBadSpec, "not a job branch: "+r.Repo)
 			}
 		}
-		// S10: the Stack sign-in password never ships.
-		if si := meta.Spec.Project.JobStackSignIn; si != nil && si.Password != "" {
+		// S10: the Stack sign-in password never ships, typed or generated.
+		passwords, err := j.signInPasswords(meta.Spec)
+		if err != nil {
+			return fail(workerproto.ReasonPolicyDenied, "the Stack sign-in password could not be checked: "+err.Error())
+		}
+		if len(passwords) > 0 {
 			for _, r := range f.Control.Repos {
 				b, _ := binding(meta, r.Repo)
 				base := meta.Spec.DiffBase[b.Repo]
 				if base == "" {
 					base = b.BaseRef
 				}
-				if adds, err := exec.DiffAddsSecret(b, base, []string{si.Password}); err != nil || adds {
+				if adds, err := exec.DiffAddsSecret(b, base, passwords); err != nil || adds {
 					return fail(workerproto.ReasonPolicyDenied, "the diff holds the Stack sign-in password (or could not be checked): "+r.Repo)
 				}
 			}

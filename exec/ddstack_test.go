@@ -372,7 +372,7 @@ func TestDDShotStackFails(t *testing.T) {
 func TestDDStackSignInEnv(t *testing.T) {
 	a := ProjectSettings{PreviewURL: "http://127.0.0.1:5174/", JobStackSignIn: &StackSignIn{URL: "/login", Email: "seed@example.com", Password: "it's-a-pass"}}
 	e := newDDStackEnv(t, func(s *DDStack) {
-		s.SignIn = a.SignInValues()
+		s.SignIn = a.SignInValues("R")
 		s.Services = s.Services[1:]
 		s.Services[0].Install = `echo "$DD_SIGNIN_EMAIL" >"$DD_TEST_MARKS/svc-signin"`
 		s.PreviewEnv = map[string]string{"AS": "{signin.email}|{signin.url}"}
@@ -396,7 +396,7 @@ func TestNewShotSignIn(t *testing.T) {
 		JobStackSignIn: &StackSignIn{URL: "/login", Email: "seed@example.com", Password: `pa"ss\word<1>`, Method: SignInHTTP,
 			HTTP:        &SignInCall{Method: "POST", Path: "/api/login", BodyTemplate: `{"e":"{signin.email}","p":"{signin.password}","r":"{random}","u":"{services.api.url}"}`},
 			SuccessPath: "/account?tab=1"}}
-	vals := DDStack{Services: a.JobStack, Random: "R", SignIn: a.SignInValues()}.placeholderValues()
+	vals := DDStack{Services: a.JobStack, Random: "R", SignIn: a.SignInValues("R")}.placeholderValues()
 	got := NewShotSignIn(a, vals)
 	if got.HTTPBody != `{"e":"seed@example.com","p":"pa\"ss\\word\u003c1\u003e","r":"R","u":"http://127.0.0.1:3000"}` {
 		t.Fatalf("body %s", got.HTTPBody)
@@ -454,5 +454,24 @@ func TestDDShotSignIn(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, DDShotName)); strings.Contains(string(b), "dd-signin") {
 		t.Fatal("the job-stack variant has sign-in lines")
+	}
+}
+
+// signin_random.v1: exactly "{random}" is the run's value; any other text
+// is a literal.
+func TestGeneratedSignInPassword(t *testing.T) {
+	for _, c := range []struct{ password, want string }{
+		{PlaceholderRandom, "R"},
+		{"{random}x", "{random}x"},
+		{"seed-Pass!word1", "seed-Pass!word1"},
+	} {
+		a := ProjectSettings{PreviewURL: "http://127.0.0.1:5173", JobStack: []JobStackService{{Name: "api", Port: 3000}},
+			JobStackSignIn: &StackSignIn{URL: "/login", Email: "seed@example.com", Password: c.password, Method: SignInHTTP,
+				HTTP: &SignInCall{Method: "POST", Path: "/api/login", BodyTemplate: `{"password":"{signin.password}"}`}}}
+		c2 := DDStack{Services: a.JobStack, Random: "R", SignIn: a.SignInValues("R")}
+		got := NewShotSignIn(a, c2.placeholderValues())
+		if c2.SignIn[PlaceholderSignInPassword] != c.want || got.Password != c.want || got.HTTPBody != `{"password":"`+c.want+`"}` {
+			t.Errorf("%q: values %q, sign-in %+v", c.password, c2.SignIn[PlaceholderSignInPassword], got)
+		}
 	}
 }

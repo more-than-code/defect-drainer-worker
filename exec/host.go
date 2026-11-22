@@ -305,4 +305,10 @@ type Hooks struct {
 	LensFinished func(lens string)
 	// Manifest returns the reviewer's manifest reader, read at capture time.
 	Manifest func() ManifestIO
+	// StackSecrets receives a run's job stack values before dd-stack is
+	// written: its {random} value (also a generated sign-in password) and a
+	// typed sign-in password. A worker keeps them for the diff and ship
+	// controls after the run (§17). They are never sent in an event. An
+	// error fails the run's setup.
+	StackSecrets func(values []string) error
 }
