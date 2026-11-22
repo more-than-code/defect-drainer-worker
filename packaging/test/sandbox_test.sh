@@ -8,6 +8,16 @@
 # apply the generated settings file's rules with bwrap directly. See the
 # tests' comments.
 #
+# Then sandboxed verify (acceptance 1-5): TestVerifySandboxBwrap runs verify
+# commands through the real verify sandbox (bwrap, socat, the egress proxy)
+# against a real worker layout: what a check can read, write, connect to
+# and signal; the proxy's allowed and refused hosts; an install-like fetch
+# from a local fake registry; a timeout that kills every grandchild; and no
+# bwrap, which skips the checks and never runs them unsandboxed. A control
+# runs the same isolation checks unsandboxed and must see them get
+# through. TestSelfTestBwrap runs the startup self-test (verify_sandbox.v1)
+# as an unprivileged user, as a host runs it.
+#
 # Then it builds an image with Debian's Postgres and runs
 # TestDDStackPostgresBwrap (dd-stack boots Postgres and a sample service in
 # bwrap, runs a command and leaves nothing running). It is a required gate:
@@ -41,6 +51,7 @@ x86_64 | amd64) arch=amd64 ;;
 esac
 
 (cd "$root" && GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=$arch go test -c -o "$work/worker.test" ./internal/worker)
+(cd "$root" && GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=$arch go test -c -o "$work/sandbox.test" ./internal/sandbox)
 (cd "$root" && GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -o "$work/dd-worker" ./cmd/dd-worker)
 "$CONTAINER" build -q -t "$IMAGE" -f "$root/packaging/test/Containerfile" "$root/packaging/test" >/dev/null
 
@@ -48,6 +59,15 @@ esac
 	-e DD_SANDBOX_E2E=1 \
 	-v "$work:/t:ro" \
 	"$IMAGE" /t/worker.test -test.run '^(TestSandboxLayoutBwrap|TestBrowserSandboxBwrap)$' -test.v -test.count=1
+
+"$CONTAINER" run --rm --privileged --network none \
+	-e DD_VERIFY_E2E=1 \
+	-v "$work:/t:ro" \
+	"$IMAGE" /t/worker.test -test.run '^TestVerifySandboxBwrap$' -test.v -test.count=1
+"$CONTAINER" run --rm --privileged --network none --user 65534:65534 \
+	-e DD_SANDBOX_E2E=1 -e HOME=/nonexistent \
+	-v "$work:/t:ro" \
+	"$IMAGE" /t/sandbox.test -test.run '^TestSelfTestBwrap$' -test.v -test.count=1
 
 "$CONTAINER" build -q -t "$STACK_IMAGE" -f "$root/packaging/test/Containerfile.stack" "$root/packaging/test" >/dev/null
 "$CONTAINER" run --rm --privileged --network none \

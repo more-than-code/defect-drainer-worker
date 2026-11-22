@@ -45,6 +45,7 @@ func TestRepoMatching(t *testing.T) {
 	p.Orgs = []string{"org_a"}
 	p.Adapters = []string{"claude"}
 	p.MinSandbox, p.MaxTurns, p.MaxWallSec, p.MaxJobs = "strict", 80, 2700, 1
+	p.VerifyCommands = VerifySandbox
 	if r := p.check(); r != "" {
 		t.Fatal(r)
 	}
@@ -69,7 +70,7 @@ func TestLoadPolicyDefaultsAndRefusals(t *testing.T) {
 	path := filepath.Join(dir, "policy.toml")
 	writeFile(t, path, "enabled = true\norgs = [\"org_a\"]\n", 0o644)
 	p := LoadPolicy(path, false, rootUID)
-	if !p.Valid || p.AllowShip || p.AllowVerifyCommands || p.MaxJobs != 1 || p.MinSandbox != "workspace" ||
+	if !p.Valid || p.AllowShip || p.AllowVerifyCommands || p.AllowVerifySet || p.VerifyCommands != VerifySandbox || p.MaxJobs != 1 || p.MinSandbox != "workspace" ||
 		p.MaxTurns != DefaultMaxTurns || p.MaxWallSec != DefaultMaxWallSec || strings.Join(p.Adapters, ",") != "claude,grok,codex,antigravity" {
 		t.Fatalf("defaults %+v", p)
 	}
@@ -229,10 +230,10 @@ func TestPolicyInvalidOrDisabledDeclinesEverything(t *testing.T) {
 	}
 }
 
-// §12.6 narrowing: a looser sandbox, higher caps and verify without
-// allow_verify_commands are narrowed, said in the log, and the job runs.
+// §12.6 narrowing: a looser sandbox, higher caps and verify with
+// verify_commands = "off" are narrowed, said in the log, and the job runs.
 func TestPolicyNarrowing(t *testing.T) {
-	pol := strings.Replace(defaultPolicy, "allow_verify_commands = true", "allow_verify_commands = false", 1) +
+	pol := strings.Replace(defaultPolicy, "allow_verify_commands = true", `verify_commands = "off"`, 1) +
 		"min_sandbox = \"strict\"\nmax_turns = 50\nmax_wall_sec = 600\n"
 	h := newHarness(t, harnessOpts{policy: pol})
 	spec := fixSpec("bjob_narrow")

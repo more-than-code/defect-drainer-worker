@@ -27,8 +27,13 @@ max_turns = 80
 max_wall_sec = 2700
 max_jobs = 1
 
-# Run the app's verify commands on this host. They are not sandboxed: keep off.
-allow_verify_commands = false
+# A project's verify commands: "sandbox" (the default) runs them in the
+# worker's verify sandbox, with network only to agent_allowed_domains; "off"
+# skips them. There is no unsandboxed setting. The older
+# allow_verify_commands is deprecated: without verify_commands, false still
+# means "off" and true means "sandbox".
+# Versions before 0.2.0-rc9 refuse this key: remove it before a rollback.
+# verify_commands = "sandbox"
 
 # Push the job branch when the operator ships (serve opens the PR).
 allow_ship = true

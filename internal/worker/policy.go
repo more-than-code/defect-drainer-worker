@@ -37,6 +37,13 @@ const (
 	DefaultAgentMaxCostUSD = 5
 )
 
+// verify_commands values (sandboxed verify, V2). There is no unsandboxed
+// value: a host that cannot sandbox skips verify.
+const (
+	VerifySandbox = "sandbox"
+	VerifyOff     = "off"
+)
+
 // KnownAdapters are the adapter names a policy may list (§5.1, Q4).
 var KnownAdapters = []string{"claude", "grok", "codex", "antigravity"}
 
@@ -50,6 +57,7 @@ var policySchema = policy.Schema{
 	"max_wall_sec":          policy.Int,
 	"max_jobs":              policy.Int,
 	"allow_verify_commands": policy.Bool,
+	"verify_commands":       policy.String,
 	"allow_ship":            policy.Bool,
 	"agent_allowed_domains": policy.Strings,
 	"max_cost_usd":          policy.Int,
@@ -77,6 +85,15 @@ type Policy struct {
 	MaxJobs             int
 	AllowVerifyCommands bool
 	AllowShip           bool
+	// VerifyCommands is policy verify_commands: "sandbox" (the default)
+	// runs a project's checks in the verify sandbox, "off" skips them.
+	// AllowVerifyCommands is the deprecated allow_verify_commands, read
+	// until 1.0: without verify_commands, an explicit false means "off"
+	// (a host owner's "no" stays a no) and true means "sandbox".
+	// AllowVerifySet says the file sets it (policy check prints a
+	// deprecation line).
+	VerifyCommands string
+	AllowVerifySet bool
 	// AllowedDomains are the exact hosts an agent's sandbox may reach
 	// (empty: no network). MaxCostUSD lowers the server's per-job cost cap
 	// (0: unset). Whole dollars: the policy file has no decimals.
@@ -146,6 +163,13 @@ func loadPolicy(files policy.Files, skipOwner bool, uid func(os.FileInfo) (uint3
 	p.MaxWallSec = intOr(v, "max_wall_sec", DefaultMaxWallSec)
 	p.MaxJobs = intOr(v, "max_jobs", DefaultMaxJobs)
 	p.AllowVerifyCommands = v["allow_verify_commands"].Bool
+	_, p.AllowVerifySet = v["allow_verify_commands"]
+	p.VerifyCommands = VerifySandbox
+	if s, ok := v["verify_commands"]; ok {
+		p.VerifyCommands = s.String
+	} else if p.AllowVerifySet && !p.AllowVerifyCommands {
+		p.VerifyCommands = VerifyOff
+	}
 	p.AllowShip = v["allow_ship"].Bool
 	p.AllowedDomains = v["agent_allowed_domains"].Strings
 	p.AgentBrowser = v["agent_browser"].String
@@ -218,6 +242,9 @@ func (p *Policy) check() string {
 	}
 	if sandboxRank(p.MinSandbox) < 0 {
 		return "bad_min_sandbox"
+	}
+	if p.VerifyCommands != VerifySandbox && p.VerifyCommands != VerifyOff {
+		return "bad_verify_commands"
 	}
 	if p.MaxTurns < 1 || p.MaxTurns > MaxMaxTurns {
 		return "bad_max_turns"
@@ -346,7 +373,7 @@ func (p Policy) Wire() workerproto.Policy {
 		Valid: p.Valid, Enabled: p.Valid && p.Enabled,
 		Orgs: nonNil(p.Orgs), Adapters: nonNil(p.Adapters), Repos: nonNil(p.Repos),
 		MinSandbox: p.MinSandbox, MaxTurns: p.MaxTurns, MaxWallSec: p.MaxWallSec,
-		AllowVerifyCommands: p.AllowVerifyCommands, AllowShip: p.AllowShip,
+		VerifyCommands: p.VerifyCommands, AllowVerifyCommands: p.VerifyCommands == VerifySandbox, AllowShip: p.AllowShip,
 		AllowedDomains: nonNil(p.AllowedDomains), MaxCostUSD: p.MaxCostUSD,
 		Browser: p.AgentBrowser, MaskedSockets: []string{},
 		AllowedModels: p.AllowedModels, Postgres: p.AgentPostgres,
@@ -354,7 +381,7 @@ func (p Policy) Wire() workerproto.Policy {
 	}
 	if !p.Valid {
 		w.Orgs, w.Adapters, w.Repos = []string{}, []string{}, []string{}
-		w.AllowVerifyCommands, w.AllowShip = false, false
+		w.VerifyCommands, w.AllowVerifyCommands, w.AllowShip = "", false, false
 		w.AllowedDomains, w.MaxCostUSD, w.Browser, w.MaskedSockets = []string{}, 0, "", []string{}
 		w.AllowedModels, w.Postgres, w.ManagedURL = nil, "", ""
 	}

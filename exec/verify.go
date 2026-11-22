@@ -23,9 +23,9 @@ import (
 // Observed 2026-08-17 — a P1 was marked resolved off widget-test renders with
 // the project's real gate never run.
 //
-// The commands are OPERATOR-authored (App Settings), never agent-authored: this
-// runner is not sandboxed, so executing strings written by the coding agent
-// would hand it unsandboxed execution on the host.
+// The commands are OPERATOR-authored (App Settings), never agent-authored. On
+// a worker they run in the verify sandbox (verify_sandbox.go); the control
+// plane's local runner runs them unsandboxed, dev only.
 
 // VerifyResult is one operator-defined check DD re-ran. Field names match
 // console BatchJobVerification / VerifyResult.
@@ -210,7 +210,44 @@ func SnapshotWorktreeReals(worktrees []git.WorktreeBinding) map[string]string {
 	return out
 }
 
+// RunVerification is the unsandboxed runner of the control plane's local
+// runner (dev only, V10). A worker runs verify through
+// Host.RunVerification, in its sandbox.
 func RunVerification(ctx context.Context, commands []VerifyCommand, worktrees []git.WorktreeBinding, handoffAbs string, repoEntries []RepoEntry, extraEnv map[string]string, realByRepo map[string]string, onLog VerifyLog, strip []string) VerificationRun {
+	env := mergeVerifyEnv(extraEnv, strip)
+	launch := func(ctx context.Context, command, dir string) (verifyProc, error) {
+		cmd := exec.CommandContext(ctx, "sh", "-c", command)
+		cmd.Dir = dir
+		cmd.Env = env
+		return verifyProc{cmd: cmd}, nil
+	}
+	return runVerification(ctx, launch, commands, worktrees, handoffAbs, repoEntries, realByRepo, onLog)
+}
+
+// verifyLaunch builds the command for one verify row.
+type verifyLaunch func(ctx context.Context, command, dir string) (verifyProc, error)
+
+// verifyProc is one row's process. start replaces cmd.Start when set;
+// reached, when set, says after Wait whether the sandbox got as far as the
+// command (false: it failed to start, which is no result of the check).
+type verifyProc struct {
+	cmd     *exec.Cmd
+	start   func() error
+	reached func() bool
+}
+
+func (p verifyProc) run() error {
+	start := p.cmd.Start
+	if p.start != nil {
+		start = p.start
+	}
+	if err := start(); err != nil {
+		return err
+	}
+	return p.cmd.Wait()
+}
+
+func runVerification(ctx context.Context, launch verifyLaunch, commands []VerifyCommand, worktrees []git.WorktreeBinding, handoffAbs string, repoEntries []RepoEntry, realByRepo map[string]string, onLog VerifyLog) VerificationRun {
 	startedAt := nowIso()
 	results := make([]VerifyResult, 0, len(commands))
 	if onLog == nil {
@@ -262,15 +299,30 @@ func RunVerification(ctx context.Context, commands []VerifyCommand, worktrees []
 		onLog("verify: "+entry.Repo+" $ "+entry.Command, "info")
 		started := time.Now()
 		cmdCtx, cancel := context.WithTimeout(ctx, verifyTimeout)
-		cmd := exec.CommandContext(cmdCtx, "sh", "-c", entry.Command)
-		cmd.Dir = wt.WorktreeAbs
-		cmd.Env = mergeVerifyEnv(extraEnv, strip)
+		proc, err := launch(cmdCtx, entry.Command, wt.WorktreeAbs)
+		if err != nil {
+			// The sandbox could not be built: no check runs, ever, outside it.
+			cancel()
+			onLog("verify: sandbox unavailable — "+err.Error()+"; the checks were not run", "warn")
+			run := VerificationRun{StartedAt: startedAt, FinishedAt: nowIso(), Results: []VerifyResult{}, SkippedReason: VerifySkippedSandboxUnavailable}
+			tryWriteVerifyJSON(handoffAbs, run)
+			return run
+		}
 		var out cappedBuffer
-		cmd.Stdout = &out
-		cmd.Stderr = &out
-		err := cmd.Run()
+		proc.cmd.Stdout = &out
+		proc.cmd.Stderr = &out
+		err = proc.run()
 		cancel()
 		durationMs := time.Since(started).Milliseconds()
+		if proc.reached != nil && !proc.reached() && ctx.Err() == nil {
+			// bwrap or the egress bridge failed before the command ran:
+			// the check has no result, and a red baseline must not
+			// excuse it as pre-existing.
+			onLog("verify: sandbox did not start — "+firstOutputLine(out.buf.String(), err)+"; the checks were not run", "warn")
+			run := VerificationRun{StartedAt: startedAt, FinishedAt: nowIso(), Results: []VerifyResult{}, SkippedReason: VerifySkippedSandboxUnavailable}
+			tryWriteVerifyJSON(handoffAbs, run)
+			return run
+		}
 
 		var exitCode *int
 		var signal *string
@@ -562,4 +614,21 @@ func AlreadyFailingLines(run *VerificationRun) []string {
 		}
 	}
 	return out
+}
+
+// firstOutputLine is the first non-empty output line, at most 200 bytes, or
+// err.
+func firstOutputLine(out string, err error) string {
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			if len(l) > 200 {
+				l = l[:200]
+			}
+			return l
+		}
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return "no output"
 }

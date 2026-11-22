@@ -69,6 +69,12 @@ type Host struct {
 	// ShotBin is the dd-worker binary dd-shot runs as `dd-worker shot` for
 	// a Stack sign-in (S10); "" in local serve.
 	ShotBin string
+	// Verify runs verify commands in the worker's sandbox; a worker always
+	// sets it. Nil skips them (verify_sandbox_unavailable), unless
+	// UnsandboxedVerify is set: the control plane's dev-only local runner
+	// (spec V10), which runs them as plain host shell.
+	Verify            *VerifySandbox
+	UnsandboxedVerify bool
 }
 
 // AgentAdapter is the host's adapter.

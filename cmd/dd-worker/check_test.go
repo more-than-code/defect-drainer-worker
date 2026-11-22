@@ -63,11 +63,33 @@ func TestPolicyCheckStdinValid(t *testing.T) {
 	body := validPolicy + "managed_url = \"https://bot.example/hosts/h1/files/policy\"\n"
 	code, out, errOut := runCmd([]string{"policy", "check", "--file", "-"}, body)
 	sum := sha256.Sum256([]byte(body))
-	if code != exitOK || errOut != "" || out != "stdin: valid (enabled=true, sha256 "+hex.EncodeToString(sum[:])+")\n" {
+	if code != exitOK || errOut != "" || out != "stdin: valid (enabled=true, sha256 "+hex.EncodeToString(sum[:])+")\nverify=sandbox\n" {
 		t.Fatalf("%d %q %q", code, out, errOut)
 	}
 	if strings.Contains(out, "bot.example") || strings.Contains(out, "org_a") {
 		t.Fatal("check printed the candidate's values")
+	}
+}
+
+// Sandboxed verify (V2, M4): the verify line, and the deprecated
+// allow_verify_commands: an explicit false is "off" unless verify_commands
+// is set.
+func TestPolicyCheckVerifyLines(t *testing.T) {
+	for _, c := range []struct{ extra, want string }{
+		{`verify_commands = "off"` + "\n", "verify=off\n"},
+		{"allow_verify_commands = false\n", "verify=off\ndeprecated: allow_verify_commands (use verify_commands)\n"},
+		{"allow_verify_commands = true\n", "verify=sandbox\ndeprecated: allow_verify_commands (use verify_commands)\n"},
+		{"allow_verify_commands = false\nverify_commands = \"sandbox\"\n", "verify=sandbox\ndeprecated: allow_verify_commands (use verify_commands)\n"},
+		{"allow_verify_commands = true\nverify_commands = \"off\"\n", "verify=off\ndeprecated: allow_verify_commands (use verify_commands)\n"},
+	} {
+		code, out, errOut := runCmd([]string{"policy", "check", "--file", "-"}, validPolicy+c.extra)
+		if _, rest, _ := strings.Cut(out, ")\n"); code != exitOK || errOut != "" || rest != c.want {
+			t.Errorf("%q: %d %q %q", c.extra, code, out, errOut)
+		}
+	}
+	code, _, errOut := runCmd([]string{"policy", "check", "--file", "-"}, validPolicy+`verify_commands = "unsandboxed"`+"\n")
+	if code != exitInvalid || errOut != "bad_verify_commands\n" {
+		t.Errorf("bad value: %d %q", code, errOut)
 	}
 }
 

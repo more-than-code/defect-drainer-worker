@@ -598,16 +598,25 @@ func (w *Worker) applyPolicy(spec exec.JobSpec, offerAdapter, offerModel, starte
 	}
 	out.Caps.AgentMaxCostUSD = capUSD
 
-	// Verify commands are org-admin shell: only with allow_verify_commands.
-	// VerifySkipped is the worker's own record: one the server sent is
-	// dropped first.
+	// Verify commands are org-admin shell: they run only in the verify
+	// sandbox, and not at all with verify_commands = "off" or while the
+	// sandbox's self-test fails (V2). VerifySkipped is the worker's own
+	// record: one the server sent is dropped first.
 	out.Project.VerifySkipped, out.Project.VerifySkippedCommands = "", 0
-	if len(out.Project.VerifyCommands) > 0 && !pol.AllowVerifyCommands {
-		out.Project.VerifySkipped = exec.VerifySkippedHostPolicy
-		out.Project.VerifySkippedCommands = len(out.Project.VerifyCommands)
-		out.Project.VerifyCommands = nil
-		out.Baseline = nil
-		notes = append(notes, "verify skipped by host policy")
+	if len(out.Project.VerifyCommands) > 0 {
+		skip, note := "", ""
+		if pol.VerifyCommands == VerifyOff {
+			skip, note = exec.VerifySkippedHostPolicy, "verify skipped by host policy"
+		} else if v := w.verifyNow(); v.err != nil {
+			skip, note = exec.VerifySkippedSandboxUnavailable, "verify skipped: sandbox unavailable ("+verifyReason(v.err)+")"
+		}
+		if skip != "" {
+			out.Project.VerifySkipped = skip
+			out.Project.VerifySkippedCommands = len(out.Project.VerifyCommands)
+			out.Project.VerifyCommands = nil
+			out.Baseline = nil
+			notes = append(notes, note)
+		}
 	}
 
 	// D5: the one secret this job needs must be on the host.
@@ -747,7 +756,7 @@ const maxPreviewCmd = 512
 
 // validatePreview is the bad_spec check of the browser fields. PreviewCmd
 // runs inside the agent's sandbox (the agent runs dd-shot), so it is not an
-// allow_verify_commands matter; it must still be one line.
+// verify_commands matter; it must still be one line.
 func validatePreview(a exec.ProjectSettings) error {
 	if len(a.AgentHosts) > 0 && !validDomains(a.AgentHosts) {
 		return errors.New("invalid agentHosts")

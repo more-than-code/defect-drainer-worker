@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"github.com/more-than-code/defect-drainer-worker/git"
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/config"
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/redact"
+	"github.com/more-than-code/defect-drainer-worker/internal/sandbox"
 	"github.com/more-than-code/defect-drainer-worker/workerproto"
 )
 
@@ -76,6 +78,9 @@ type Options struct {
 	// OwnerUID overrides the owner check of policy.toml and secrets.env
 	// (tests: a temp file cannot be chowned to root).
 	OwnerUID func(os.FileInfo) (uint32, bool)
+	// VerifySandbox finds the verify sandbox and runs its self-test (nil:
+	// bwrap and socat on PATH, then the real self-test). Tests replace it.
+	VerifySandbox func(context.Context) (sandbox.Launcher, error)
 }
 
 // Worker is one dd-worker process.
@@ -103,6 +108,9 @@ type Worker struct {
 	revoked    bool
 
 	redactor redact.Exact
+
+	// verify is the last verify-sandbox self-test.
+	verify verifyState
 
 	// masked is the last socket scan's list (policy agent_browser only).
 	masked []string

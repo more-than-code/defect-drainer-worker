@@ -26,6 +26,9 @@ type Snapshot struct {
 	// Tools is the last tools readiness (git, and browser with
 	// agent_browser), as hello and status send it.
 	Tools []workerproto.ToolStatus `json:"tools,omitempty"`
+	// VerifySandbox is the last verify-sandbox self-test: "ready" or
+	// "unavailable (<reason>)".
+	VerifySandbox string `json:"verifySandbox,omitempty"`
 }
 
 func snapshotPath(p Paths) string { return p.StatusFile() }
@@ -43,6 +46,7 @@ func (w *Worker) writeSnapshot(connected bool) {
 	w.mu.Unlock()
 	s.Busy = w.busyIDs()
 	s.Tools = w.toolsNow()
+	s.VerifySandbox = verifySandboxLine(w.verifyNow().err)
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return

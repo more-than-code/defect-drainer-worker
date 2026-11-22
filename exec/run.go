@@ -419,7 +419,7 @@ func (r *run) start() (Outcome, error) {
 				baseWts = s.BaselineWorktrees
 				baseReal = SnapshotWorktreeReals(baseWts)
 			}
-			vrun := RunVerification(r.ctx, verifyCommands, baseWts, filepath.Join(handoff, "baseline"), s.Project.RepoEntries, provisioned.VerifyEnv, baseReal, func(line, level string) {
+			vrun := r.host.RunVerification(r.ctx, verifyCommands, baseWts, filepath.Join(handoff, "baseline"), s.Project.RepoEntries, provisioned.VerifyEnv, baseReal, func(line, level string) {
 				spawnLog("baseline "+line, level)
 			}, strip)
 			baseline = &vrun
@@ -781,7 +781,7 @@ func (r *run) afterFixLoop(fin loopFinish, log func(line, level string)) {
 	s := r.spec
 	harvest := &FixHarvest{}
 	if !fin.failed {
-		vrun := RunVerification(r.ctx, s.Project.VerifyCommands, fin.wts, fin.handoff, s.Project.RepoEntries, fin.verifyEnv, fin.realByRepo, log, s.StripEnv)
+		vrun := r.host.RunVerification(r.ctx, s.Project.VerifyCommands, fin.wts, fin.handoff, s.Project.RepoEntries, fin.verifyEnv, fin.realByRepo, log, s.StripEnv)
 		hygiene := MeasureDiffHygiene(fin.wts, fin.diffBase, log)
 		hygiene.StackSecret = r.diffAddsStackSecret(fin, log)
 		verdict := JudgeVerification(&vrun, fin.baseline)
@@ -796,6 +796,12 @@ func (r *run) afterFixLoop(fin loopFinish, log func(line, level string)) {
 		if skipped {
 			vrun.Ran, vrun.Ok, vrun.SkippedReason = false, false, s.Project.VerifySkipped
 			summary = fmt.Sprintf("verify: skipped by %s (%d command(s) configured)", s.Project.VerifySkipped, s.Project.VerifySkippedCommands)
+			level = "warn"
+		} else if vrun.SkippedReason != "" {
+			// The sandbox could not start at run time: a skip as well.
+			skipped = true
+			vrun.Ran, vrun.Ok = false, false
+			summary = fmt.Sprintf("verify: skipped: %s (%d command(s) configured)", vrun.SkippedReason, len(s.Project.VerifyCommands))
 			level = "warn"
 		}
 		cp := vrun
