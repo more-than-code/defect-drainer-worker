@@ -7,6 +7,8 @@ LIB=/usr/local/lib/dd-worker
 LINK=/usr/local/bin/dd-worker
 UNIT=/etc/systemd/system/dd-worker.service
 INSTALL=/release/v$V1/install.sh
+SECRETS=/etc/dd-worker/secrets.env
+LC_LINE='LoadCredential=secrets.env:/etc/dd-worker/secrets.env'
 export DD_WORKER_RELEASE_BASE=file:///release
 
 failures=0
@@ -29,6 +31,17 @@ links_to() {
 	if [ "$got" = "$LIB/$1/dd-worker" ]; then ok "$LINK -> $1"; else not_ok "$LINK -> $1 (got $got)"; fi
 }
 absent() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
+worker_reads() { runuser -u dd-worker -- cat "$SECRETS"; }
+# The last restart's view: "owner=<secrets.env owner> lc=<1 if the unit had
+# LoadCredential>", logged by the fake systemctl at the moment of the restart.
+last_restart_is() {
+	got=$(grep '^at-restart ' /tmp/systemctl.log | tail -n 1)
+	if [ "$got" = "at-restart $1" ]; then ok "at the restart: $1"; else not_ok "at the restart: $1 (got '$got')"; fi
+}
+# daemon-reload is logged after the unit's last change and before the restart.
+reload_before_restart() {
+	awk '/^daemon-reload$/ { r = NR } /^restart dd-worker$/ { s = NR } END { exit !(r && s && r < s) }' /tmp/systemctl.log
+}
 inst() { sh "$INSTALL" "$@" >/tmp/out 2>&1; }
 out_has() { grep -qF -- "$1" /tmp/out; }
 
@@ -52,7 +65,10 @@ fake_systemd() {
 echo "$*" >>/tmp/systemctl.log
 case "$*" in
 "is-active --quiet dd-worker") [ -e /tmp/fake-active ] ;;
-"restart dd-worker" | "enable --now dd-worker") touch /tmp/fake-active ;;
+"restart dd-worker" | "enable --now dd-worker")
+	echo "at-restart owner=$(stat -c %U /etc/dd-worker/secrets.env 2>/dev/null || echo missing) lc=$(grep -c '^LoadCredential=secrets.env:' /etc/systemd/system/dd-worker.service)" >>/tmp/systemctl.log
+	touch /tmp/fake-active
+	;;
 "stop dd-worker" | "disable --now dd-worker") rm -f /tmp/fake-active ;;
 *) exit 0 ;;
 esac
@@ -78,6 +94,12 @@ test_main() {
 		'[ "$(id -u dd-worker)" -lt 1000 ] && getent passwd dd-worker | grep -q ":/home/dd-worker:/usr/sbin/nologin$"'
 	layout "$V1"
 	check "the unit is the release's dd-worker.service" cmp "$LIB/$V1/dd-worker.service" $UNIT
+	check "the unit reads secrets.env through LoadCredential" grep -qx "$LC_LINE" $UNIT
+	check "the unit has no EnvironmentFile" sh -c "! grep -q '^EnvironmentFile' $UNIT"
+	attrs $SECRETS "root:root 600"
+	check "a missing secrets.env is created empty" sh -c "[ ! -s $SECRETS ]"
+	check "install says it created an empty secrets.env" out_has "created an empty $SECRETS"
+	check "dd-worker cannot read the root-owned secrets.env" sh -c "! runuser -u dd-worker -- cat $SECRETS"
 	check "no policy.toml is created" absent /etc/dd-worker/policy.toml
 	for f in LICENSE NOTICE README-worker.md install.sh policy.example.toml; do
 		check "the tarball holds $f" test -f "$LIB/$V1/$f"
@@ -111,13 +133,20 @@ test_main() {
 		not_ok "secrets"
 		cat /tmp/out
 	fi
-	attrs /etc/dd-worker/secrets.env "dd-worker:dd-worker 600"
+	attrs $SECRETS "root:root 600"
+	check "secrets says root 0600" out_has "wrote $SECRETS (root 0600)"
+	check "dd-worker cannot read secrets.env" sh -c "! runuser -u dd-worker -- cat $SECRETS"
 	check "secrets.env holds the key" sh -c "[ \"\$(cat /etc/dd-worker/secrets.env)\" = 'ANTHROPIC_API_KEY=$key' ]"
 	check "the key is not in install.sh's output" sh -c "! grep -qF '$key' /tmp/out"
 	check "a key with a space is refused" sh -c "! printf 'bad key\n' | sh $INSTALL secrets"
 	check "an empty key is refused" sh -c "! printf '' | sh $INSTALL secrets"
 	check "secrets.env is unchanged after the refusals" sh -c "[ \"\$(cat /etc/dd-worker/secrets.env)\" = 'ANTHROPIC_API_KEY=$key' ]"
 	check "no temp secrets file is left" sh -c '! ls -A /etc/dd-worker | grep -q "^\.secrets"'
+	check "re-install keeps the key" inst install "$V1"
+	check "secrets.env still holds the key" sh -c "[ \"\$(cat $SECRETS)\" = 'ANTHROPIC_API_KEY=$key' ]"
+	attrs $SECRETS "root:root 600"
+	inst status
+	check "status says root 0600 via LoadCredential" out_has "secrets.env: root 0600 (via LoadCredential)"
 
 	echo "# enroll refuses a non-https origin"
 	check "enroll http:// is refused" sh -c "! printf 'dd_wjn_x\n' | sh $INSTALL enroll http://example.com"
@@ -134,6 +163,8 @@ test_main() {
 	check "previous is $V1" sh -c "[ \"\$(cat $LIB/previous)\" = '$V1' ]"
 	check "upgrade restarted the service" grep -qx "restart dd-worker" /tmp/systemctl.log
 	check "upgrade reloaded systemd" grep -qx "daemon-reload" /tmp/systemctl.log
+	check "daemon-reload came before the restart" reload_before_restart
+	last_restart_is "owner=root lc=1"
 	check "dd-worker version prints $V2" sh -c "$LINK version | grep -qx '$V2'"
 	layout "$V2"
 
@@ -143,6 +174,24 @@ test_main() {
 	check "it says rolled back $V2 -> $V1" out_has "rolled back $V2 -> $V1"
 	check "previous is $V2" sh -c "[ \"\$(cat $LIB/previous)\" = '$V2' ]"
 	check "both versions are kept" test -x "$LIB/$V2/dd-worker"
+	check "rollback restored $V1's unit" cmp "$LIB/$V1/dd-worker.service" $UNIT
+	attrs $SECRETS "root:root 600"
+
+	echo "# start refuses a missing secrets.env under LoadCredential"
+	mv $SECRETS /tmp/secrets.keep
+	if inst start; then not_ok "start without secrets.env fails"; else ok "start without secrets.env fails"; fi
+	check "it names install.sh secrets" out_has "sh install.sh secrets"
+	inst status
+	check "status says secrets.env is missing" out_has "secrets.env: missing"
+	mv /tmp/secrets.keep $SECRETS
+
+	echo "# rollback to a LoadCredential version recreates a missing secrets.env"
+	check "upgrade $V2 again" inst upgrade "$V2"
+	mv $SECRETS /tmp/secrets.keep
+	check "rollback with no secrets.env" inst rollback
+	attrs $SECRETS "root:root 600"
+	last_restart_is "owner=root lc=1"
+	mv /tmp/secrets.keep $SECRETS
 
 	echo "# upgrade that never connects rolls back"
 	rm -f /tmp/fake-connects
@@ -171,6 +220,57 @@ test_main() {
 	for p in /etc/dd-worker /var/lib/dd-worker /home/dd-worker; do check "purged $p" absent "$p"; done
 	check "user dd-worker is gone" sh -c '! id dd-worker'
 	check "group dd-worker is gone" sh -c '! getent group dd-worker'
+}
+
+# An older release (V0, unit without LoadCredential) upgraded to and rolled
+# back from this one (V1), with this release's installer, as on a host.
+test_compat() {
+	OLD=/release/v$V0/install.sh
+	key='sk-ant-api03-TEST_only-compat-0123'
+	echo "# $V0 installed by its own installer"
+	if sh "$OLD" install "$V0" >/tmp/out 2>&1; then ok "install $V0"; else
+		not_ok "install $V0"
+		cat /tmp/out
+	fi
+	check "$V0's unit has no LoadCredential" sh -c "! grep -q '^LoadCredential=' $UNIT"
+	if printf '%s\n' "$key" | sh "$OLD" secrets >/tmp/out 2>&1; then ok "secrets on $V0"; else not_ok "secrets on $V0"; fi
+	attrs $SECRETS "dd-worker:dd-worker 600"
+	check "dd-worker reads secrets.env on $V0" worker_reads
+
+	echo "# upgrade $V0 -> $V1 (fake systemd, connects)"
+	fake_systemd
+	touch /tmp/fake-active /tmp/fake-connects
+	if inst upgrade "$V1"; then ok "upgrade $V1"; else
+		not_ok "upgrade $V1"
+		cat /tmp/out
+	fi
+	links_to "$V1"
+	check "the unit is $V1's" cmp "$LIB/$V1/dd-worker.service" $UNIT
+	attrs $SECRETS "root:root 600"
+	check "the key is kept" sh -c "[ \"\$(cat $SECRETS)\" = 'ANTHROPIC_API_KEY=$key' ]"
+	check "dd-worker cannot read secrets.env on $V1" sh -c "! runuser -u dd-worker -- cat $SECRETS"
+	check "daemon-reload came before the restart" reload_before_restart
+	last_restart_is "owner=root lc=1"
+	check "it restarted once" sh -c "[ \"\$(grep -cx 'restart dd-worker' /tmp/systemctl.log)\" = 1 ]"
+
+	echo "# rollback $V1 -> $V0"
+	check "rollback" inst rollback
+	links_to "$V0"
+	check "the unit is $V0's again" cmp "$LIB/$V0/dd-worker.service" $UNIT
+	attrs $SECRETS "dd-worker:dd-worker 600"
+	check "dd-worker reads secrets.env on $V0 again" worker_reads
+	last_restart_is "owner=dd-worker lc=0"
+
+	echo "# upgrade $V0 -> $V1 that never connects goes back to $V0"
+	rm -f /tmp/fake-connects
+	if DD_WORKER_CONNECT_TIMEOUT=2 inst upgrade "$V1"; then not_ok "a failed upgrade exits non-zero"; else ok "a failed upgrade exits non-zero"; fi
+	check "it says it is back on $V0" out_has "back on $V0"
+	links_to "$V0"
+	check "the unit is $V0's" cmp "$LIB/$V0/dd-worker.service" $UNIT
+	attrs $SECRETS "dd-worker:dd-worker 600"
+	last_restart_is "owner=dd-worker lc=0"
+	check "secrets on $V0's unit writes dd-worker 0600" sh -c "printf '%s\n' '$key' | sh $INSTALL secrets"
+	attrs $SECRETS "dd-worker:dd-worker 600"
 }
 
 nothing_installed() {
@@ -225,9 +325,10 @@ test_refuse() {
 
 case "${1:-}" in
 main) test_main ;;
+compat) test_compat ;;
 refuse) test_refuse ;;
 *)
-	echo "usage: in_container.sh main|refuse" >&2
+	echo "usage: in_container.sh main|compat|refuse" >&2
 	exit 2
 	;;
 esac

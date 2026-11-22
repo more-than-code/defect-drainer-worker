@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"syscall"
@@ -28,9 +29,28 @@ type Secrets struct {
 
 // LoadSecrets reads path. A missing file is an empty set. The file must be
 // a regular file (not a symlink) with no group or world bits, owned by root
-// or by the worker's own user (the unit runs unprivileged and must read it).
-// uid overrides the owner for tests.
+// or by the worker's own user. Root-owned is the installed layout: under
+// systemd the worker reads the LoadCredential copy instead
+// (LoadSecretsCredential), and this path serves dd-worker run by hand and
+// older units. uid overrides the owner for tests.
 func LoadSecrets(path string, uid func(os.FileInfo) (uint32, bool)) (Secrets, error) {
+	return loadSecrets(path, func(fi os.FileInfo) string { return secretsFileReason(fi, uid, true) })
+}
+
+// SecretsCredential is the credential ID the unit's
+// LoadCredential=secrets.env:/etc/dd-worker/secrets.env hands the service.
+const SecretsCredential = "secrets.env"
+
+// LoadSecretsCredential reads the systemd credential copy of secrets.env
+// from dir ($CREDENTIALS_DIRECTORY). systemd owns the copy, so only the
+// file and mode rules apply, not the owner rule. A missing copy is an
+// empty set.
+func LoadSecretsCredential(dir string) (Secrets, error) {
+	return loadSecrets(filepath.Join(dir, SecretsCredential),
+		func(fi os.FileInfo) string { return secretsFileReason(fi, nil, false) })
+}
+
+func loadSecrets(path string, rule func(os.FileInfo) string) (Secrets, error) {
 	fi, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Secrets{vals: map[string]string{}}, nil
@@ -38,7 +58,7 @@ func LoadSecrets(path string, uid func(os.FileInfo) (uint32, bool)) (Secrets, er
 	if err != nil {
 		return Secrets{}, errors.New("secrets.env cannot be read")
 	}
-	switch secretsFileReason(fi, uid) {
+	switch rule(fi) {
 	case "bad_symlink", "bad_not_regular":
 		return Secrets{}, errors.New("secrets.env must be a regular file")
 	case "bad_mode":
@@ -65,8 +85,8 @@ func LoadSecrets(path string, uid func(os.FileInfo) (uint32, bool)) (Secrets, er
 
 // secretsFileReason is the file rule for secrets.env as a check reason, ""
 // when it passes: a regular file (not a symlink) with no group or world
-// bits, owned by root or by this process's user.
-func secretsFileReason(fi os.FileInfo, uid func(os.FileInfo) (uint32, bool)) string {
+// bits, and, when checkOwner, owned by root or by this process's user.
+func secretsFileReason(fi os.FileInfo, uid func(os.FileInfo) (uint32, bool), checkOwner bool) string {
 	switch {
 	case fi.Mode()&os.ModeSymlink != 0:
 		return "bad_symlink"
@@ -74,6 +94,8 @@ func secretsFileReason(fi os.FileInfo, uid func(os.FileInfo) (uint32, bool)) str
 		return "bad_not_regular"
 	case fi.Mode().Perm()&0o077 != 0:
 		return "bad_mode"
+	case !checkOwner:
+		return ""
 	}
 	owner, ok := ownerUID(fi, uid)
 	if !ok || (owner != 0 && int(owner) != os.Geteuid()) {
@@ -116,7 +138,7 @@ func CheckSecretsFile(path string, uid func(os.FileInfo) (uint32, bool)) (reason
 	if err != nil {
 		return "", err
 	}
-	if r := secretsFileReason(fi, uid); r != "" {
+	if r := secretsFileReason(fi, uid, true); r != "" {
 		return r, nil
 	}
 	f, err := os.Open(path)

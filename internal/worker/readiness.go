@@ -106,12 +106,23 @@ func (h *hostAdapter) host(p Paths, jobID, model string, wts []git.WorktreeBindi
 		// its credential (env, env.prev), the clones or the stored control
 		// results. exec adds {state}/jobs (other jobs, spools, blobs) and
 		// agent-state.
-		EnvFiles:       append([]string{p.ConfigDir, p.CredentialDir(), p.ReposDir(), p.ControlsDir()}, homeCredentialFiles()...),
+		EnvFiles:       append(p.hostSecretDirs(), homeCredentialFiles()...),
 		DefectsRoot:    p.Evidence(jobID),
 		ReadOnly:       jobReadOnly(p, jobID, wts),
 		AllowedDomains: domains,
 		DenyWrite:      jobDenyWrite(p),
 	}
+}
+
+// hostSecretDirs are the dirs an agent may not read: the worker's config,
+// its credential, the clones, the stored control results and, under
+// systemd, the LoadCredential copy of secrets.env.
+func (p Paths) hostSecretDirs() []string {
+	out := []string{p.ConfigDir, p.CredentialDir(), p.ReposDir(), p.ControlsDir()}
+	if p.CredentialsDir != "" {
+		out = append(out, p.CredentialsDir)
+	}
+	return out
 }
 
 // jobDenyWrite is what no agent of a worker job may write (spec §4.1.11):

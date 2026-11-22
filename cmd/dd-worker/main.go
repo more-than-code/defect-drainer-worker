@@ -172,6 +172,10 @@ func cmdRun(args []string, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
+	// systemd's LoadCredential= sets CREDENTIALS_DIRECTORY (a path, never
+	// the key) when the unit hands the worker its secrets.env copy.
+	// scrubOwnEnv then drops it, so no child learns where the copy is.
+	p.CredentialsDir = os.Getenv("CREDENTIALS_DIRECTORY")
 	scrubOwnEnv()
 	w, err := worker.New(worker.Options{Paths: *p, Adapters: a, Log: stderr})
 	if err != nil {
@@ -193,11 +197,12 @@ func cmdRun(args []string, stderr io.Writer) int {
 	}
 }
 
-// scrubOwnEnv drops DD_WORKER_* from this process before anything starts:
-// the credential is read from its file, and no child should inherit it.
+// scrubOwnEnv drops DD_WORKER_* and CREDENTIALS_DIRECTORY from this
+// process before anything starts: the credential is read from its file,
+// and no child should inherit it or the path to the secrets.env copy.
 func scrubOwnEnv() {
 	for _, e := range os.Environ() {
-		if k, _, ok := strings.Cut(e, "="); ok && strings.HasPrefix(k, "DD_WORKER_") {
+		if k, _, ok := strings.Cut(e, "="); ok && (strings.HasPrefix(k, "DD_WORKER_") || k == "CREDENTIALS_DIRECTORY") {
 			_ = os.Unsetenv(k)
 		}
 	}

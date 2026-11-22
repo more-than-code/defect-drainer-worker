@@ -155,7 +155,7 @@ func New(opts Options) (*Worker, error) {
 // adapters. An unreadable secrets.env leaves the previous set and is logged.
 func (w *Worker) reloadHostFiles() {
 	pol := LoadPolicy(w.opts.Paths.Policy(), false, w.opts.OwnerUID)
-	sec, err := LoadSecrets(w.opts.Paths.Secrets(), w.opts.OwnerUID)
+	sec, err := w.loadSecrets()
 	w.mu.Lock()
 	w.policy = pol
 	if err == nil {
@@ -172,6 +172,16 @@ func (w *Worker) reloadHostFiles() {
 	if !pol.Valid {
 		w.logf("policy.toml is not usable (%s): every offer is declined", pol.Reason)
 	}
+}
+
+// loadSecrets reads the LoadCredential copy when systemd gave one, else
+// the file on disk. The copy is fixed while the service runs, so an edit to
+// secrets.env takes effect on the next restart.
+func (w *Worker) loadSecrets() (Secrets, error) {
+	if d := w.opts.Paths.CredentialsDir; d != "" {
+		return LoadSecretsCredential(d)
+	}
+	return LoadSecrets(w.opts.Paths.Secrets(), w.opts.OwnerUID)
 }
 
 func (w *Worker) rebuildRedactorLocked() {
