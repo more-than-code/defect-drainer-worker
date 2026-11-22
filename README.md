@@ -49,9 +49,11 @@ can check it against the code and against the binary you install.
 - **Follows your policy.** The policy sets which orgs, repositories and agents it
   accepts, the sandbox level, turn and time limits, and whether verify commands
   and shipping are allowed. Without a valid policy it declines every job.
-  Verify commands run as plain host shell commands, so they are off unless you
-  set `allow_verify_commands = true`. (`internal/worker/policy.go`,
-  `packaging/policy.example.toml`)
+  Verify commands run only in a bubblewrap sandbox that hides the host's
+  secrets and DD's state, with network only through a proxy to the policy's
+  allowed domains; `verify_commands = "off"` skips them, and a host that
+  can't start the sandbox skips them too. (`internal/worker/policy.go`,
+  `internal/sandbox`, `internal/egress`, `packaging/policy.example.toml`)
 
 ## What it sends to the server
 

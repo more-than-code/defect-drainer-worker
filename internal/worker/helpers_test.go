@@ -16,6 +16,7 @@ import (
 	dexec "github.com/more-than-code/defect-drainer-worker/exec"
 	"github.com/more-than-code/defect-drainer-worker/git"
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/config"
+	"github.com/more-than-code/defect-drainer-worker/internal/sandbox"
 	"github.com/more-than-code/defect-drainer-worker/workerproto"
 )
 
@@ -62,6 +63,10 @@ type harness struct {
 	agent  string // fake claude path
 	argv   string // fake agent argv log
 	tmp    string
+	// verify is the verify-sandbox lookup the worker gets; bwrapLog is the
+	// fake bwrap's argv (\x1f between args, \x1e after each run).
+	verify   func(context.Context) (sandbox.Launcher, error)
+	bwrapLog string
 }
 
 type harnessOpts struct {
@@ -70,6 +75,9 @@ type harnessOpts struct {
 	agent   string // fake agent body after the version/auth cases; "" writes the fix artifacts
 	noStart bool
 	timing  Timing
+	// verify replaces the verify sandbox lookup (nil: the fake bwrap,
+	// ready).
+	verify func(context.Context) (sandbox.Launcher, error)
 }
 
 const defaultPolicy = `enabled = true
@@ -109,6 +117,14 @@ func newHarness(t *testing.T, o harnessOpts) *harness {
 	setupGit(t, tmp)
 	h.argv = filepath.Join(tmp, "argv.log")
 	h.agent = fakeAgent(t, tmp, h.argv, o.agent)
+	h.verify = o.verify
+	if h.verify == nil {
+		bw := fakeBwrap(t, tmp)
+		h.bwrapLog = filepath.Join(tmp, "bwrap.log")
+		h.verify = func(context.Context) (sandbox.Launcher, error) {
+			return sandbox.Launcher{Bwrap: bw, Socat: "/bin/true"}, nil
+		}
+	}
 	if !o.noStart {
 		h.start(o.timing)
 	}
@@ -152,6 +168,7 @@ func (h *harness) launch(timing Timing) {
 		Adapters: AdapterConfig{ClaudeBin: h.agent, ClaudeConfigDir: filepath.Join(h.tmp, "claude-cfg"),
 			GrokBin: filepath.Join(h.tmp, "no-such", "grok"), AgyBin: filepath.Join(h.tmp, "no-such", "agy")},
 		Timing: fastTiming(timing), Log: h.log, OwnerUID: rootUID,
+		VerifySandbox: h.verify,
 	})
 	if err != nil {
 		h.t.Fatal(err)
@@ -349,3 +366,33 @@ func processAlive(pid int) bool {
 }
 
 func closeCode(n int) websocket.StatusCode { return websocket.StatusCode(n) }
+
+// fakeBwrap stands in for bwrap where there is none (the Mac): it applies
+// only --chdir and the built environment (--clearenv, --setenv), says
+// "ready" on fd 3 as the real wrapper does, and runs the command, the last
+// argument, without any sandbox. Its argv goes to
+// bwrap.log. The real layout is tested with real bwrap in
+// packaging/test/sandbox_test.sh.
+func fakeBwrap(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "fake-bwrap")
+	log := filepath.Join(dir, "bwrap.log")
+	writeFile(t, path, `#!/usr/bin/perl
+open(my $l, ">>", "`+log+`"); print $l join("\x1f", @ARGV), "\x1e"; close($l);
+my $dir = "/"; my %env;
+while (@ARGV) {
+	my $a = shift @ARGV;
+	last if $a eq "--";
+	if ($a eq "--chdir") { $dir = shift @ARGV }
+	elsif ($a eq "--setenv") { my $k = shift @ARGV; $env{$k} = shift @ARGV }
+	elsif ($a =~ /^--(ro-bind|bind|dev-bind)$/) { shift @ARGV; shift @ARGV }
+	elsif ($a =~ /^--(tmpfs|proc|dev|cap-drop|size)$/) { shift @ARGV }
+}
+# The real wrapper says it reached the command on fd 3.
+if (open(my $r, ">&=", 3)) { print $r "ready\n"; close($r); }
+%ENV = %env;
+chdir $dir or die "chdir $dir: $!";
+exec "/bin/sh", "-c", $ARGV[-1];
+`, 0o755)
+	return path
+}

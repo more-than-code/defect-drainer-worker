@@ -424,11 +424,32 @@ func (w *Worker) helloFrame() workerproto.Hello {
 	if st == nil {
 		st = w.checkReadiness(context.Background())
 	}
+	// One self-test result for both, so they always agree.
+	v := w.verifyNow()
 	return workerproto.Hello{
 		Header: workerproto.NewHeader(workerproto.TypeHello), WorkerID: workerID,
-		Version: Version, Protocol: workerproto.Protocol, Capabilities: []string{workerproto.CapBlobsV1, workerproto.CapGitTokenV1, workerproto.CapBrowserV1, workerproto.CapVerifySubmittedV1, workerproto.CapJobStackV1, workerproto.CapProjectKeysV1, workerproto.CapSigninRandomV1},
+		Version: Version, Protocol: workerproto.Protocol, Capabilities: capabilities(v),
 		MaxJobs: pol.MaxJobs, BusyJobIDs: w.busyIDs(), Adapters: st, Tools: w.toolsNow(), Policy: w.wirePolicy(pol),
+		VerifySandbox: verifySandboxWire(v),
 	}
+}
+
+// capabilities are this worker's: verify_sandbox.v1 only while the
+// verify sandbox's self-test passes (V9).
+func capabilities(v verifyState) []string {
+	caps := []string{workerproto.CapBlobsV1, workerproto.CapGitTokenV1, workerproto.CapBrowserV1, workerproto.CapVerifySubmittedV1, workerproto.CapJobStackV1, workerproto.CapProjectKeysV1, workerproto.CapSigninRandomV1}
+	if v.err == nil {
+		caps = append(caps, workerproto.CapVerifySandboxV1)
+	}
+	return caps
+}
+
+// verifySandboxWire is hello.verify_sandbox for the same self-test.
+func verifySandboxWire(v verifyState) *workerproto.VerifySandboxStatus {
+	if v.err == nil {
+		return &workerproto.VerifySandboxStatus{Ready: true}
+	}
+	return &workerproto.VerifySandboxStatus{Reason: verifyReason(v.err)}
 }
 
 func (w *Worker) statusFrame() workerproto.Status {
@@ -455,6 +476,7 @@ func (w *Worker) toolsNow() []workerproto.ToolStatus {
 // Postgres binaries (job stack, S8). It runs on hello and in the 5-minute
 // readiness loop, never inside an offer's answer window.
 func (w *Worker) recheckTools(ctx context.Context) {
+	w.recheckVerifySandbox(ctx)
 	tools := checkTools(ctx)
 	w.mu.Lock()
 	pol := w.policy

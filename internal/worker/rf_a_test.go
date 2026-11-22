@@ -234,7 +234,7 @@ func TestRestartKeepsCostTotal(t *testing.T) {
 // Criterion 7: a verify skip by host policy is logged with the count, is
 // recorded, and resolves nothing; a server-sent VerifySkipped is dropped.
 func TestVerifySkippedByHostPolicy(t *testing.T) {
-	pol := strings.Replace(defaultPolicy, "allow_verify_commands = true", "allow_verify_commands = false", 1)
+	pol := strings.Replace(defaultPolicy, "allow_verify_commands = true", `verify_commands = "off"`, 1)
 	h := newHarness(t, harnessOpts{policy: pol})
 	spec := fixSpec("bjob_rfa_vskip")
 	spec.Project.VerifyCommands = []dexec.VerifyCommand{{Repo: "app", Command: "true"}, {Repo: "app", Command: "false"}}

@@ -235,9 +235,10 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	pol := worker.LoadPolicy(p.Policy(), false, nil)
 	if pol.Valid {
-		fmt.Fprintf(stdout, "policy:     valid, enabled=%v, orgs=%s, adapters=%s, repos=%d pattern(s), min_sandbox=%s, max_turns=%d, max_wall_sec=%d, max_jobs=%d, allow_verify_commands=%v, allow_ship=%v\n",
+		fmt.Fprintf(stdout, "policy:     valid, enabled=%v, orgs=%s, adapters=%s, repos=%d pattern(s), min_sandbox=%s, max_turns=%d, max_wall_sec=%d, max_jobs=%d, verify=%s, allow_ship=%v\n",
 			pol.Enabled, strings.Join(pol.Orgs, ","), strings.Join(pol.Adapters, ","), len(pol.Repos), pol.MinSandbox,
-			pol.MaxTurns, pol.MaxWallSec, pol.MaxJobs, pol.AllowVerifyCommands, pol.AllowShip)
+			pol.MaxTurns, pol.MaxWallSec, pol.MaxJobs, pol.VerifyCommands, pol.AllowShip)
+		printPolicyDeprecations(stdout, pol, "            ")
 	} else {
 		fmt.Fprintf(stdout, "policy:     NOT VALID (%s): every offer is declined\n", pol.Reason)
 	}
@@ -267,7 +268,23 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		busy = strings.Join(snap.Busy, ", ")
 	}
 	fmt.Fprintf(stdout, "busy jobs:  %s\n", busy)
+	if snap.VerifySandbox != "" {
+		fmt.Fprintf(stdout, "verify sandbox: %s\n", snap.VerifySandbox)
+	}
 	return code
+}
+
+// printPolicyLines are policy check's lines after "valid": the verify
+// setting, then any deprecated key the file still sets.
+func printPolicyLines(stdout io.Writer, pol worker.Policy) {
+	fmt.Fprintf(stdout, "verify=%s\n", pol.VerifyCommands)
+	printPolicyDeprecations(stdout, pol, "")
+}
+
+func printPolicyDeprecations(stdout io.Writer, pol worker.Policy, indent string) {
+	if pol.AllowVerifySet {
+		fmt.Fprintf(stdout, "%sdeprecated: allow_verify_commands (use verify_commands)\n", indent)
+	}
 }
 
 func cmdPolicyCheck(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -291,6 +308,7 @@ func cmdPolicyCheck(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 			return exitFail
 		}
 		fmt.Fprintf(stdout, "%s: valid (enabled=%v, sha256 %s)\n", path, pol.Enabled, pol.Hash)
+		printPolicyLines(stdout, pol)
 		return exitOK
 	}
 	if fs.NArg() != 0 {
@@ -319,6 +337,7 @@ func cmdPolicyCheck(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 		return exitInvalid
 	}
 	fmt.Fprintf(stdout, "%s: valid (enabled=%v, sha256 %s)\n", name, pol.Enabled, pol.Hash)
+	printPolicyLines(stdout, pol)
 	return exitOK
 }
 

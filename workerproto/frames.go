@@ -145,6 +145,10 @@ type Policy struct {
 	// only with a valid policy.
 	Hash       string `json:"hash,omitempty"`
 	ManagedURL string `json:"managed_url,omitempty"`
+	// Additive in 0.2.0-rc9 (sandboxed verify): policy verify_commands,
+	// "sandbox" or "off" ("" with an invalid policy). AllowVerifyCommands
+	// is then verify_commands == "sandbox", for servers before it.
+	VerifyCommands string `json:"verify_commands,omitempty"`
 }
 
 type Hello struct {
@@ -158,6 +162,8 @@ type Hello struct {
 	Adapters     []AdapterStatus `json:"adapters"`
 	Tools        []ToolStatus    `json:"tools,omitempty"`
 	Policy       Policy          `json:"policy"`
+	// Additive in 0.2.0-rc9 (sandboxed verify, §19).
+	VerifySandbox *VerifySandboxStatus `json:"verify_sandbox,omitempty"`
 }
 
 type HelloOK struct {

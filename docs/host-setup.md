@@ -15,7 +15,8 @@ and prints each step.
 ## Requirements
 
 - Linux on arm64 or amd64 (a Raspberry Pi 4/5 with 64-bit OS is fine).
-- `git` 2.32 or newer, `bubblewrap` and `socat` (Claude's sandbox), `curl`:
+- `git` 2.32 or newer, `bubblewrap` and `socat` (Claude's sandbox and the
+  verify sandbox), `curl`:
 
   ```sh
   sudo apt-get install -y git bubblewrap socat curl
@@ -114,7 +115,8 @@ sudo $EDITOR /etc/dd-worker/policy.toml
 ```
 
 Set `orgs` to your org id, and `repos` to limit which repos this host works on.
-Keep `allow_verify_commands = false`: verify commands are not sandboxed.
+A project's verify commands run in the worker's verify sandbox (see
+[Verify sandbox](#verify-sandbox)); `verify_commands = "off"` skips them.
 `allow_ship = true` lets the worker push the job branch (the server opens the
 PR). The file must stay root-owned and not group- or world-writable, or the
 worker declines every job. `sudo sh install.sh status` shows how it reads it.
@@ -207,8 +209,88 @@ equals `sha256sum /etc/dd-worker/policy.toml`.
   `model_not_allowed` and waits for another worker. Unset means any model;
   an empty list or a bad name makes `dd-worker policy check` fail
   (`bad_allowed_models`).
-- **Verify:** with `allow_verify_commands = false`, a job's verify commands
-  are skipped, the job log says so, and no defect resolves from that job.
+- **Verify:** a project's verify commands run in a separate sandbox, not the
+  agent's; see [Verify sandbox](#verify-sandbox).
+
+### Verify sandbox
+
+From 0.2.0-rc9, a project's verify commands (Settings -> Verification,
+written by the org's admins) run on the worker inside a bubblewrap sandbox,
+once before the agent's change (the baseline) and once after it.
+`verify_commands = "sandbox"` is the default. `verify_commands = "off"` skips
+them on this host, and the server then gives jobs with checks to other
+workers. There is no unsandboxed setting: if the sandbox can't start, the
+checks are skipped with `verify_sandbox_unavailable`, the job log says so,
+and no defect resolves from that job. `allow_verify_commands` is deprecated
+(`dd-worker policy check` prints `deprecated: allow_verify_commands`) and read
+until 1.0: on a host without `verify_commands`, `allow_verify_commands =
+false` still means off, and `true` means sandbox. Replace it with
+`verify_commands`.
+
+What a verify command can reach:
+
+- **Files:** the host, read-only. Empty in its place: `/etc/dd-worker`,
+  `/var/lib/dd-worker` (the credential, `status.json`, the clones, other jobs,
+  agent state), the systemd copy of `secrets.env`, the worker user's home,
+  `/tmp`, `/run` and `/var/run`, and every path hidden from the agent
+  (`~/.ssh`, `~/.config`, cloud credentials and the rest).
+- **Writes:** only its job's worktrees, plus a temporary dir (`TMPDIR`) and a
+  cache dir that the worker makes fresh in the job's own dir (not the
+  agent's handoff) and removes after each run. Each worktree's `.git` and its
+  clone's git dir stay read-only, so a check can't change what ships. A
+  hidden dir takes writes up to 64 MiB, then thrown away.
+- **Links:** every path the sandbox binds is checked first. If the agent
+  left a symlink there (say, the worktree's `.git` pointing at a secret), the
+  checks are skipped with `verify_sandbox_unavailable`; nothing is mounted.
+- **Processes:** its own PID namespace: it can't see or signal the worker or
+  other jobs, and can't make a user namespace of its own. A timeout
+  (20 minutes per command) or a cancel kills every process the command
+  started. Each command may open 8192 files, run 2048 processes and write
+  files up to 8 GiB. Memory isn't capped by the sandbox: the systemd unit's
+  limits apply to the whole worker.
+- **Environment:** built for the check, not inherited: `PATH`, an empty
+  `HOME`, `TMPDIR`, `LANG`, `CI=1`, the proxy variables, and cache dirs for
+  npm, Go, pip, pub, cargo and XDG. Nothing from `secrets.env`, no adapter
+  key, no test-account password.
+- **Services:** none. A job stack's Postgres and services are for the agent
+  only; tests that need a database must skip without one.
+- **Network:** none of its own. `HTTPS_PROXY` and `HTTP_PROXY` point at a
+  proxy in the worker that reaches only the hosts the job's agent may reach:
+  `agent_allowed_domains`, narrowed by the project's agent hosts. A `CONNECT`
+  to one of them on port 443 or 80, or a plain-HTTP request to one on port
+  80, is passed. Anything else fails: other hosts, other ports, IP
+  addresses, and connections that skip the proxy. The proxy answers 403 and
+  the job log says `verify: egress refused <host>` once per host, with the
+  host name only. The proxy never connects to an address on the host itself
+  or a private network (loopback, link-local, the RFC 1918 private ranges,
+  carrier-grade NAT and IPv6 unique-local addresses), even for an allowed
+  name, so a registry on your LAN can't be used. It holds at most 48 connections
+  at once and closes a tunnel idle for 2 minutes. A tool that ignores the
+  proxy variables has no network.
+
+Hosts a check typically needs, to add to `agent_allowed_domains`:
+
+| Check | Hosts |
+|---|---|
+| `npm ci`, `pnpm install`, `yarn` (v2+) | `registry.npmjs.org` |
+| `yarn` (v1) | `registry.yarnpkg.com` |
+| `go mod download`, `go test` | `proxy.golang.org`, `sum.golang.org` |
+| `pip install` | `pypi.org`, `files.pythonhosted.org` |
+| `cargo build` | `index.crates.io`, `static.crates.io` |
+| Maven | `repo.maven.apache.org` |
+
+When a check fails on a fetch, the job log names each refused host.
+
+The sandbox needs `bubblewrap` and `socat` and unprivileged user namespaces,
+as Claude's sandbox does. The worker checks it at start and every 5 minutes:
+it starts the sandbox and checks that a hidden file is gone, a read-only dir
+refuses a write, and the proxy passes an allowed host and refuses another
+(no network needed). If the sandbox fails to start for a check, that check
+is skipped the same way, never counted as failed. While that passes, the worker tells
+the server it can run checks (`verify_sandbox.v1`). `dd-worker status`
+prints `verify sandbox: ready`, or `unavailable (<reason>)`, for example
+`unavailable (bwrap: not found)`. A macOS worker has no verify sandbox: it
+skips every check.
 
 ### After-fix screenshots
 
@@ -408,6 +490,11 @@ Versions before 0.2.0-rc4 refuse `allowed_models` the same way: remove it
 before rolling back past rc4.
 Versions before 0.2.0-rc6 refuse `agent_postgres` the same way: remove it
 before rolling back past rc6.
+Versions before 0.2.0-rc9 refuse `verify_commands` the same way: remove it
+before rolling back past rc9. They run verify commands unsandboxed, and only
+with `allow_verify_commands = true`: leave that key out (or false) on a host
+you roll back. A host that never set `verify_commands` and keeps
+`allow_verify_commands = false` skips verify on every version.
 
 ## Remove
 

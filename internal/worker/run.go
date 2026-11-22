@@ -125,6 +125,7 @@ func (j *job) launch(d decision, leaseID string) {
 	// fresh socket masks from the offer's decision.
 	eh.Browser, eh.MaskedSockets = d.browser, d.masked
 	eh.Postgres = d.postgres
+	eh.Verify = w.verifyBox(j.id)
 	if spec.Project.JobStackSignIn != nil {
 		eh.ShotBin = shotBin()
 	}
