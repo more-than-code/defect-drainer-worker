@@ -138,3 +138,17 @@ func TestRunNotEnrolled(t *testing.T) {
 		t.Fatalf("unknown command: %d", code)
 	}
 }
+
+// TestScrubOwnEnvDropsCredentialsDirectory: no child learns where systemd
+// put the secrets.env copy.
+func TestScrubOwnEnvDropsCredentialsDirectory(t *testing.T) {
+	t.Setenv("CREDENTIALS_DIRECTORY", "/run/credentials/dd-worker.service")
+	t.Setenv("DD_WORKER_X", "1")
+	scrubOwnEnv()
+	if _, ok := os.LookupEnv("CREDENTIALS_DIRECTORY"); ok {
+		t.Fatal("CREDENTIALS_DIRECTORY still set")
+	}
+	if _, ok := os.LookupEnv("DD_WORKER_X"); ok {
+		t.Fatal("DD_WORKER_X still set")
+	}
+}

@@ -6,6 +6,10 @@
 # containers with no network: the releases are served as file:// URLs.
 #   main:    layout, owners, modes, idempotent re-install, policy kept,
 #            secrets, upgrade, rollback, automatic rollback, remove, purge
+#   compat:  an older release whose unit has no LoadCredential (the real
+#            v0.2.0-rc7 when the tag is here, else this build with the line
+#            taken out): upgrade makes secrets.env root-owned before the
+#            restart, rollback and a failed upgrade hand it back first
 #   refuse:  a missing prerequisite and a wrong checksum install nothing
 # systemd does not run in the container: upgrade/rollback use a fake
 # systemctl/journalctl; the live service checks are done on a real host.
@@ -17,6 +21,8 @@ CONTAINER=${CONTAINER:-podman}
 IMAGE=localhost/dd-worker-install-test:bookworm
 V1=0.0.1-test
 V2=0.0.2-test
+V0=0.0.0-test
+OLD_REF=${OLD_REF:-v0.2.0-rc7}
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d)
@@ -35,6 +41,26 @@ for v in "$V1" "$V2"; do
 	WORKER_VERSION=$v WORKER_PLATFORMS=linux_$arch sh "$root/packaging/dist.sh" "$work/release/v$v"
 done
 
+# V0: the older release. Built from OLD_REF when this checkout has it (its
+# own install.sh and unit), else V1's tarball repacked with the
+# LoadCredential line taken out of its unit.
+if git -C "$root" rev-parse -q --verify "$OLD_REF^{commit}" >/dev/null 2>&1; then
+	echo "install_test: V0 is $OLD_REF"
+	mkdir -p "$work/oldsrc"
+	git -C "$root" archive "$OLD_REF" | tar -x -C "$work/oldsrc"
+	(cd "$work/oldsrc" && GOWORK=off WORKER_VERSION=$V0 WORKER_PLATFORMS=linux_$arch sh packaging/dist.sh "$work/release/v$V0")
+else
+	echo "install_test: $OLD_REF is not in this checkout; V0 is this build without LoadCredential"
+	tb=dd-worker_${V0}_linux_$arch.tar.gz
+	WORKER_VERSION=$V0 WORKER_PLATFORMS=linux_$arch sh "$root/packaging/dist.sh" "$work/release/v$V0"
+	mkdir "$work/repack"
+	tar -xzf "$work/release/v$V0/$tb" -C "$work/repack"
+	sed '/^LoadCredential=/d' "$work/repack/dd-worker.service" >"$work/repack/unit" &&
+		mv "$work/repack/unit" "$work/repack/dd-worker.service"
+	(cd "$work/repack" && COPYFILE_DISABLE=1 tar -czf "$work/release/v$V0/$tb" .)
+	(cd "$work/release/v$V0" && { command -v sha256sum >/dev/null && sha256sum "$tb" install.sh || shasum -a 256 "$tb" install.sh; } >SHA256SUMS)
+fi
+
 # The same V1 release with its tarball's sum changed (first hex digit flipped).
 mkdir -p "$work/bad"
 cp -R "$work/release/v$V1" "$work/bad/"
@@ -48,11 +74,12 @@ mv "$sums.new" "$sums"
 run() { # release-dir mode
 	"$CONTAINER" run --rm --network=none \
 		-v "$1:/release:ro" -v "$root/packaging/test:/test:ro" \
-		-e V1="$V1" -e V2="$V2" "$IMAGE" sh /test/in_container.sh "$2"
+		-e V0="$V0" -e V1="$V1" -e V2="$V2" "$IMAGE" sh /test/in_container.sh "$2"
 }
 
 status=0
 run "$work/release" main || status=1
+run "$work/release" compat || status=1
 run "$work/bad" refuse || status=1
 if [ "$status" = 0 ]; then
 	echo "install_test: PASS"

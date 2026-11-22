@@ -5,11 +5,13 @@
 #
 #   sh install.sh install X.Y.Z      download, verify, unpack, set up the host
 #   sh install.sh secrets            ANTHROPIC_API_KEY from stdin -> secrets.env
+#                                    (root 0600: systemd LoadCredential reads it)
 #   sh install.sh enroll <origin>    join token from stdin -> dd-worker init
 #   sh install.sh start|stop|status
 #   sh install.sh upgrade X.Y.Z      install alongside, switch, restart; rolls
 #                                    back if not connected within 60 s
-#   sh install.sh rollback           switch to the previous version
+#   sh install.sh rollback           switch to the previous version (its unit
+#                                    and the secrets.env owner it needs)
 #   sh install.sh remove [--purge]   --purge also deletes state, config, user
 #
 # DD_WORKER_RELEASE_BASE overrides the release base URL (https or file only);
@@ -30,6 +32,7 @@ ETC=/etc/dd-worker
 STATE=/var/lib/dd-worker
 WORKER_HOME=/home/dd-worker
 UNIT=/etc/systemd/system/dd-worker.service
+SECRETS=$ETC/secrets.env
 WORKER_PATH=/usr/local/bin:/usr/bin:/bin
 CONNECTED_LINE='connected (protocol'
 
@@ -210,10 +213,6 @@ setup_host() {
 	runuser -u "$WORKER_USER" -- chmod 0700 "$STATE/credential"
 	ensure_dir "$WORKER_HOME" "$WORKER_USER:$WORKER_USER" 0700
 	say "dirs: $ETC (root 0755), $STATE and $STATE/credential, $WORKER_HOME ($WORKER_USER 0700)"
-	if [ -f "$ETC/secrets.env" ]; then
-		chown "$WORKER_USER:$WORKER_USER" "$ETC/secrets.env"
-		chmod 0600 "$ETC/secrets.env"
-	fi
 	install -o root -g root -m 0644 "$src/policy.example.toml" "$ETC/policy.example.toml"
 	if [ -f "$ETC/policy.toml" ]; then
 		say "kept the existing $ETC/policy.toml"
@@ -221,12 +220,59 @@ setup_host() {
 		say "no $ETC/policy.toml yet: the worker declines every job until you write one:"
 		say "  cp $ETC/policy.example.toml $ETC/policy.toml && \$EDITOR $ETC/policy.toml"
 	fi
+	install_unit "$src/dd-worker.service"
+	own_secrets "$UNIT"
+}
+
+# Installs unit file $1 as the dd-worker unit and reloads systemd.
+install_unit() {
 	mkdir -p "$(dirname "$UNIT")"
-	install -o root -g root -m 0644 "$src/dd-worker.service" "$UNIT"
+	install -o root -g root -m 0644 "$1" "$UNIT"
 	say "installed $UNIT"
 	if systemd_up; then
 		systemctl daemon-reload
 	fi
+}
+
+# The owner secrets.env needs under unit file $1: root when systemd reads it
+# for the worker (LoadCredential, 0.2.0-rc8 on), else the worker user
+# (0.2.0-rc7 and older read the file themselves).
+secrets_owner() {
+	if [ -f "$1" ] && grep -q '^LoadCredential=secrets\.env:' "$1"; then
+		printf 'root\n'
+	else
+		printf '%s\n' "$WORKER_USER"
+	fi
+}
+
+# Gives secrets.env the owner unit file $1 needs, mode 0600. Under
+# LoadCredential the unit does not start without the file, so a missing one
+# is created empty (no keys, as a missing file meant before).
+own_secrets() {
+	os_owner=$(secrets_owner "$1")
+	if [ ! -e "$SECRETS" ] && [ "$os_owner" = root ]; then
+		(umask 077 && : >"$SECRETS")
+		say "created an empty $SECRETS (no keys yet: sh install.sh secrets adds one)"
+	fi
+	[ -f "$SECRETS" ] || return 0
+	chown "$os_owner:$os_owner" "$SECRETS"
+	chmod 0600 "$SECRETS"
+	say "$SECRETS: $os_owner 0600"
+}
+
+# Switches back to installed version $1 (rollback, and a failed upgrade):
+# secrets.env's owner first, for the unit $1 shipped (an rc7 worker cannot
+# read a root-owned file), then that unit, then the binary. The caller
+# restarts.
+switch_back() {
+	sb_unit="$LIB/$1/dd-worker.service"
+	if [ -f "$sb_unit" ]; then
+		own_secrets "$sb_unit"
+		install_unit "$sb_unit"
+	else
+		say "$LIB/$1 has no dd-worker.service: kept the installed unit"
+	fi
+	set_current "$1"
 }
 
 # Points /usr/local/bin/dd-worker at $1 (an atomic rename), records the old
@@ -318,7 +364,7 @@ cmd_upgrade() {
 		return 0
 	fi
 	say "$1 did not connect within ${CONNECT_TIMEOUT}s: rolling back to $old"
-	set_current "$old"
+	switch_back "$old"
 	systemctl restart dd-worker
 	die "upgrade to $1 failed; back on $old (sh install.sh status, journalctl -u dd-worker)"
 }
@@ -331,7 +377,7 @@ cmd_rollback() {
 		die "no previous version to roll back to"
 	fi
 	cur=$(current_version)
-	set_current "$prev"
+	switch_back "$prev"
 	if service_active; then
 		systemctl restart dd-worker
 		say "restarted dd-worker on $prev"
@@ -368,11 +414,12 @@ cmd_secrets() {
 	# printf is a shell builtin: the key never appears in a process's argv.
 	printf 'ANTHROPIC_API_KEY=%s\n' "$key" >"$tmp"
 	key=''
-	chown "$WORKER_USER:$WORKER_USER" "$tmp"
+	owner=$(secrets_owner "$UNIT")
+	chown "$owner:$owner" "$tmp"
 	chmod 0600 "$tmp"
-	mv -f "$tmp" "$ETC/secrets.env"
+	mv -f "$tmp" "$SECRETS"
 	trap - EXIT
-	say "wrote $ETC/secrets.env ($WORKER_USER 0600)"
+	say "wrote $SECRETS ($owner 0600)"
 	if service_active; then
 		systemctl restart dd-worker
 		say "restarted dd-worker"
@@ -412,6 +459,9 @@ cmd_enroll() {
 cmd_start() {
 	need_root start
 	systemd_up || die "systemd is not running"
+	if [ ! -e "$SECRETS" ] && [ "$(secrets_owner "$UNIT")" = root ]; then
+		die "$SECRETS is missing and the unit needs it: sh install.sh secrets, or install again for an empty one"
+	fi
 	systemctl enable --now dd-worker
 	say "dd-worker enabled and started"
 	cmd_status
@@ -431,6 +481,13 @@ cmd_status() {
 	fi
 	[ -x "$BIN_LINK" ] || die "dd-worker is not installed"
 	printf 'version:    %s\n' "$(current_version)"
+	if [ ! -e "$SECRETS" ]; then
+		printf 'secrets.env: missing\n'
+	elif [ "$(secrets_owner "$UNIT")" = root ]; then
+		printf 'secrets.env: %s (via LoadCredential)\n' "$(stat -c '%U 0%a' "$SECRETS")"
+	else
+		printf 'secrets.env: %s\n' "$(stat -c '%U 0%a' "$SECRETS")"
+	fi
 	run_as_worker status
 }
 

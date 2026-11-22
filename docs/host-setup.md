@@ -54,15 +54,25 @@ same release, refuses the tarball if its SHA-256 does not match, and sets up:
 | `/usr/local/bin/dd-worker` | root, symlink | the current version |
 | `/etc/dd-worker/` | root : 0755 | your config; the worker never writes here |
 | `/etc/dd-worker/policy.toml` | root : 0644 | your host policy (you write it) |
-| `/etc/dd-worker/secrets.env` | dd-worker : 0600 | `ANTHROPIC_API_KEY` |
+| `/etc/dd-worker/secrets.env` | root : 0600 (read by systemd LoadCredential) | `ANTHROPIC_API_KEY` |
 | `/var/lib/dd-worker/` | dd-worker : 0700 | worker state: clones, jobs, spool |
 | `/var/lib/dd-worker/credential/` | dd-worker : 0700 | the worker credential (rotated by the server) |
 | `/home/dd-worker` | dd-worker : 0700 | an empty HOME |
 | `/etc/systemd/system/dd-worker.service` | root : 0644 | the hardened unit |
 
-The worker reads `secrets.env` itself when it starts; the unit has no
-`EnvironmentFile`, so the key never sits in the service's environment.
-`install.sh secrets` restarts the service after writing it.
+From 0.2.0-rc8 the unit has `LoadCredential=secrets.env:/etc/dd-worker/secrets.env`:
+systemd reads the root-owned file when the service starts and hands the worker
+a private copy in `$CREDENTIALS_DIRECTORY`, which agents can't read. The
+`dd-worker` user can't read `/etc/dd-worker/secrets.env` itself, and the unit
+has no `EnvironmentFile`, so the key never sits in the service's environment.
+
+- The unit doesn't start without the file, so `install.sh` creates an empty
+  one (no keys) when there is none.
+- An edit takes effect when the service restarts. `install.sh secrets`
+  restarts it after writing the file.
+- `dd-worker run` started by hand, with no `CREDENTIALS_DIRECTORY`, reads the
+  file directly. It must then be readable by that user: root- or
+  `dd-worker`-owned, 0600.
 
 Claude Code is never updated by the worker: every agent run gets
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which turns Claude Code's
@@ -133,6 +143,12 @@ worker accepts it. It writes both files root-owned (`policy.toml` 0644,
 - A typical apply: check the candidate, run `health --idle` (or apply anyway),
   swap the file, restart the worker, then `health --wait 30s`, and roll back
   on any non-zero exit.
+- `secrets.env` needs 0.2.0-rc8 or later on the host, because older workers
+  read the file themselves and can't read a root-owned one. Manage it as its
+  own entry (for example `dd-secrets`, mode `0600`), check candidates with
+  `secrets check --file -`, and restart after the swap: the worker gets new
+  keys only on a restart. As `dd-worker`, a path check of the root-owned file
+  can't open it (exit 1).
 
 Set `managed_url` in `policy.toml` to the page where the file is edited
 (https only, at most 512 characters, no user or password). The console then
@@ -318,7 +334,8 @@ sudo sh install.sh secrets
 
 Paste the API key at the hidden prompt (or pipe it on stdin). It is never an
 argument and never printed. Run it again to replace the key; a running worker
-is restarted.
+is restarted. The file is written root-owned 0600 (`dd-worker`-owned on a host
+rolled back to 0.2.0-rc7 or older, whose unit has no `LoadCredential`).
 
 ## Enrol
 
@@ -340,7 +357,7 @@ Paste the token at the hidden prompt (or pipe it on stdin). This runs
 
 ```sh
 sudo sh install.sh start     # enable and start the unit
-sudo sh install.sh status    # unit state, version, enrolment, policy, connection
+sudo sh install.sh status    # unit state, version, secrets.env, enrolment, policy, connection
 sudo sh install.sh stop
 journalctl -u dd-worker -f   # the worker's log
 ```
@@ -357,8 +374,9 @@ sudo sh install.sh upgrade X.Y.Z
 
 installs the new version alongside the current one, switches to it and
 restarts. If the worker is not active with a `connected` log line within 60
-seconds, it switches back and restarts the old version on its own. Only the
-current and previous versions are kept.
+seconds, it switches back (the old unit and `secrets.env` owner too) and
+restarts the old version on its own. Only the current and previous versions
+are kept.
 
 If you also run the server, upgrade the server first, then its workers.
 
@@ -366,7 +384,17 @@ If you also run the server, upgrade the server first, then its workers.
 sudo sh install.sh rollback
 ```
 
-switches to the previous version and restarts. Rolling back to a version older
+switches to the previous version, with that version's unit, and restarts. Run
+it with the current version's installer
+(`/usr/local/lib/dd-worker/<current>/install.sh`): installers before 0.2.0-rc8
+don't restore the unit.
+
+Rolling back to 0.2.0-rc7 or older first hands `secrets.env` back to
+`dd-worker` (0600), because those versions read the file themselves. If a host
+manager owns `secrets.env`, remove its entry first: it only manages root-owned
+files.
+
+Rolling back to a version older
 than 0.2.0 needs the credential copied back to `/etc/dd-worker/env` by hand
 (0.2.0 moved it to `/var/lib/dd-worker/credential/`).
 

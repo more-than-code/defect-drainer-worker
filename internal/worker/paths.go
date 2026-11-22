@@ -19,9 +19,12 @@ import (
 // holds the host owner's files (policy.toml, secrets.env); it is root-owned
 // and the worker never writes it. StateDir holds what the worker writes: the
 // rotating credential (credential/env, env.prev), repos, jobs, controls.
+// CredentialsDir is systemd's $CREDENTIALS_DIRECTORY, or empty: when set,
+// secrets.env is read from its LoadCredential copy there.
 type Paths struct {
-	ConfigDir string
-	StateDir  string
+	ConfigDir      string
+	StateDir       string
+	CredentialsDir string
 }
 
 // CredentialDir is {state}/credential (mode 0700): env and env.prev.

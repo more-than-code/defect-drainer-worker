@@ -12,6 +12,11 @@ User=dd-worker
 Group=dd-worker
 ExecStart=/usr/local/bin/dd-worker run --claude-bin /usr/local/bin/claude
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# secrets.env is root-owned 0600: systemd reads it at start and hands the
+# worker a private copy in $CREDENTIALS_DIRECTORY (never in the environment).
+# The unit does not start if the file is missing: install.sh leaves an empty
+# one. An edit takes effect on the next restart.
+LoadCredential=secrets.env:/etc/dd-worker/secrets.env
 
 # Exit 3 = revoked, 4 = fatal (replaced, protocol or org mismatch): the owner
 # must act, so systemd does not restart into a loop.
