@@ -338,7 +338,15 @@ func (j *job) shipRepo(ctx context.Context, b git.WorktreeBinding, r exec.ShipRe
 			return res
 		}
 		if _, err := pinned(wt, "diff", "--cached", "--quiet"); err != nil {
-			if out, err := pinnedEnv(commitIdentity, wt, "commit", "-m", msg); err != nil {
+			ident := commitIdentity
+			if r.Author != nil {
+				if !validCommitAuthor(*r.Author) {
+					res.Error = "invalid commit author"
+					return res
+				}
+				ident = authorIdentity(*r.Author)
+			}
+			if out, err := pinnedEnv(ident, wt, "commit", "-m", msg); err != nil {
 				res.Error = "git commit: " + lastLine(out)
 				return res
 			}
@@ -436,6 +444,8 @@ func pinnedOut(b git.WorktreeBinding, args ...string) ([]byte, error) {
 // The worker commits as Defect Drainer on every host (the maintainers, 2026-11-18): the
 // pinned git reads no global config, and a host's GIT_AUTHOR_* never
 // reaches a pinned call, so the identity is set here for ship's commit only.
+// A ship repo's author (set by the server) replaces the author, never the
+// committer.
 const (
 	commitName  = "Defect Drainer"
 	commitEmail = "dd-worker@users.noreply.defectdrainer.com"
@@ -444,4 +454,36 @@ const (
 var commitIdentity = []string{
 	"GIT_AUTHOR_NAME=" + commitName, "GIT_AUTHOR_EMAIL=" + commitEmail,
 	"GIT_COMMITTER_NAME=" + commitName, "GIT_COMMITTER_EMAIL=" + commitEmail,
+}
+
+// authorIdentity is commitIdentity with the server's author (a ship's
+// repos[].author): the committer stays Defect Drainer.
+func authorIdentity(a exec.CommitAuthor) []string {
+	return []string{
+		"GIT_AUTHOR_NAME=" + a.Name, "GIT_AUTHOR_EMAIL=" + a.Email,
+		"GIT_COMMITTER_NAME=" + commitName, "GIT_COMMITTER_EMAIL=" + commitEmail,
+	}
+}
+
+// validCommitAuthor admits a name of 1-100 and an email of 3-254
+// characters, with no control character and no '<' or '>' (git would
+// refuse or mangle them), and an email with one '@', not at either end,
+// and no space.
+func validCommitAuthor(a exec.CommitAuthor) bool {
+	bad := func(s string, max int, spaceOK bool) bool {
+		if s == "" || len(s) > max || !utf8.ValidString(s) || strings.TrimSpace(s) != s {
+			return true
+		}
+		for _, c := range s {
+			if c < 0x20 || c == 0x7f || c == '<' || c == '>' || (!spaceOK && c == ' ') {
+				return true
+			}
+		}
+		return false
+	}
+	if bad(a.Name, 100, true) || bad(a.Email, 254, false) || len(a.Email) < 3 {
+		return false
+	}
+	at := strings.IndexByte(a.Email, '@')
+	return at > 0 && at < len(a.Email)-1 && strings.Count(a.Email, "@") == 1
 }

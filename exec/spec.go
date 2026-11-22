@@ -364,13 +364,22 @@ const (
 )
 
 // ShipRepo is one repo of a ship control: the files the operator confirmed
-// and the commit message and pull request text.
+// and the commit message and pull request text. Author, when set, is the
+// commit's author (the committer stays Defect Drainer): a deploy check such
+// as Vercel's admits a commit only when its author is a known account.
 type ShipRepo struct {
-	Repo    string   `json:"repo"`
-	Files   []string `json:"files"`
-	Message string   `json:"message"`
-	Title   string   `json:"title"`
-	Body    string   `json:"body"`
+	Repo    string        `json:"repo"`
+	Files   []string      `json:"files"`
+	Message string        `json:"message"`
+	Title   string        `json:"title"`
+	Body    string        `json:"body"`
+	Author  *CommitAuthor `json:"author,omitempty"`
+}
+
+// CommitAuthor is a git identity: a display name and an email.
+type CommitAuthor struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 // Control is an instruction for a running job. Resume carries the spec of
