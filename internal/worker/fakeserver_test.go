@@ -74,6 +74,7 @@ type rx struct {
 
 type fakeJob struct {
 	spec       exec.JobSpec
+	rawSpec    []byte // served instead of spec when set (an older server's keys)
 	leaseID    string
 	lastSeq    int64
 	blocked    bool  // a rejection is outstanding
@@ -492,6 +493,9 @@ func (fs *fakeServer) side(w http.ResponseWriter, r *http.Request) {
 	case parts[1] == "spec" && r.Method == http.MethodGet:
 		fs.mu.Lock()
 		b, _ := json.Marshal(j.spec)
+		if j.rawSpec != nil {
+			b = j.rawSpec
+		}
 		fs.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(b)

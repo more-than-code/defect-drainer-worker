@@ -24,7 +24,7 @@ const DDStackName = "dd-stack"
 // DDStack is what dd-stack needs: the app's services and preview env, the
 // worktree of each repo, the policy's Postgres binaries ("" when no service
 // needs Postgres), the preview timeout and the job run's {random} value.
-// SignIn holds the {signin.*} values (AppSettings.SignInValues) when the
+// SignIn holds the {signin.*} values (ProjectSettings.SignInValues) when the
 // app has a Stack sign-in; dd-stack then also exports them as
 // DD_SIGNIN_URL, DD_SIGNIN_EMAIL and DD_SIGNIN_PASSWORD (S10).
 type DDStack struct {

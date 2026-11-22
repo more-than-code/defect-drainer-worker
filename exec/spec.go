@@ -41,9 +41,9 @@ type SubmittedRef struct {
 
 // JobSpec is one run of one job.
 type JobSpec struct {
-	JobID string `json:"jobId"`
-	Kind  string `json:"kind"`
-	AppID string `json:"appId"`
+	JobID     string `json:"jobId"`
+	Kind      string `json:"kind"`
+	ProjectID string `json:"projectId"`
 	// Label names the job in log lines, the sandbox profile and the prompt:
 	// the batch id, or the test run id for a test job.
 	Label   string `json:"label"`
@@ -73,9 +73,9 @@ type JobSpec struct {
 	CreatedAt    string `json:"createdAt,omitempty"`
 	RunStartedAt string `json:"runStartedAt,omitempty"`
 
-	App     AppSettings  `json:"app"`
-	Fix     *FixSpec     `json:"fix,omitempty"`
-	TestRun *TestRunSpec `json:"testRun,omitempty"`
+	Project ProjectSettings `json:"project"`
+	Fix     *FixSpec        `json:"fix,omitempty"`
+	TestRun *TestRunSpec    `json:"testRun,omitempty"`
 
 	// StripEnv are host variables removed from every child (every app's
 	// test-account secret names), read when the run starts.
@@ -104,8 +104,8 @@ type JobSpec struct {
 // VerifySubmitted reports whether s verifies a submitted ref.
 func (s JobSpec) VerifySubmitted() bool { return s.Mode == ModeVerifySubmitted }
 
-// AppSettings are the app's agent settings, normalised by the orchestrator.
-type AppSettings struct {
+// ProjectSettings are the project's agent settings, normalised by the orchestrator.
+type ProjectSettings struct {
 	Sandbox         string          `json:"sandbox"`
 	Toolchain       string          `json:"toolchain"`
 	SimulatorWrites bool            `json:"simulatorWrites,omitempty"`

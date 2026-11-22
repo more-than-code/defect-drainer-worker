@@ -56,6 +56,8 @@ type job struct {
 	applyMu sync.Mutex
 	// ctrlMu serialises controls for this job.
 	ctrlMu sync.Mutex
+	// stackMu guards stack-secrets.json (stacksecrets.go).
+	stackMu sync.Mutex
 
 	mu          sync.Mutex
 	meta        jobMeta

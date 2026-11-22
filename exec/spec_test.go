@@ -43,13 +43,13 @@ func fullAgentRun() *AgentRun {
 func fullSpec() JobSpec {
 	planID, planVersion, defID, defStatus := "TPLAN-1", 2, "DEF-1", "open"
 	return JobSpec{
-		JobID: "bjob_1", Kind: KindBatchFix, AppID: "app_0123456789abcdef", Label: "BATCH-1", BatchID: "BATCH-1",
+		JobID: "bjob_1", Kind: KindBatchFix, ProjectID: "app_0123456789abcdef", Label: "BATCH-1", BatchID: "BATCH-1",
 		Mode: ModeResume, ResumeSession: "sess-1", Handoff: "/data/batch-jobs/bjob_1", DefectsRoot: "/data",
 		Worktrees: []git.WorktreeBinding{{Repo: "web", PrimaryAbs: "/p/web", WorktreeAbs: "/w/web", Branch: "dd/b", RepoURL: "git@x:web.git", BaseRef: "main", BaseBranch: "main", BaseSource: "local"}},
 		DefectIDs: []string{"DEF-1"}, HarvestIDs: []string{"DEF-1"},
 		DiffBase: map[string]string{"web": "abc"}, Baseline: fullVerification(), PriorAgentRun: fullAgentRun(),
 		CreatedAt: "2026-11-15T00:00:00Z", RunStartedAt: "2026-11-15T01:00:00Z",
-		App: AppSettings{Sandbox: "strict", Toolchain: "flutter", SimulatorWrites: true, MaxTurns: 80,
+		Project: ProjectSettings{Sandbox: "strict", Toolchain: "flutter", SimulatorWrites: true, MaxTurns: 80,
 			VerifyCommands: []VerifyCommand{{Repo: "web", Command: "make test"}},
 			RepoEntries:    []RepoEntry{{Name: "web", URL: "/p/web", BaseSource: "local", BaseBranch: "main"}},
 			VerifySkipped:  VerifySkippedHostPolicy, VerifySkippedCommands: 2,
@@ -65,15 +65,15 @@ func fullSpec() JobSpec {
 				HTTP:        &SignInCall{Method: "POST", Path: "/api/login", BodyTemplate: `{"e":"{signin.email}"}`},
 				SuccessPath: "/account"}},
 		Fix: &FixSpec{
-			Batch: Batch{ID: "BATCH-1", AppID: "app_0123456789abcdef", Title: "t", Goal: "g", Status: "in_progress", DefectIDs: []string{"DEF-1"}, Mode: "grok", Created: "c", UpdatedAt: "u", Path: "sqlite:batches/BATCH-1"},
-			Defects: []Defect{{ID: "DEF-1", AppID: "app", Title: "t", Severity: "P1", Status: "open", Area: "a", Client: "c", Surface: "s",
+			Batch: Batch{ID: "BATCH-1", ProjectID: "app_0123456789abcdef", Title: "t", Goal: "g", Status: "in_progress", DefectIDs: []string{"DEF-1"}, Mode: "grok", Created: "c", UpdatedAt: "u", Path: "sqlite:batches/BATCH-1"},
+			Defects: []Defect{{ID: "DEF-1", ProjectID: "app", Title: "t", Severity: "P1", Status: "open", Area: "a", Client: "c", Surface: "s",
 				Repos: []string{"web"}, Labels: []string{"l"}, Related: []string{"DEF-2"}, Source: "src", Reporter: "r", KeyFiles: []string{"k"},
 				Evidence: []string{"evidence/DEF-1/a.png"}, FixEvidence: []string{"evidence/DEF-1/b.png"}, Reported: "2026-11-15", Summary: "s",
 				ResolvedDate: "d", Resolution: "r", DuplicateOf: "DEF-3", Body: "b", Bucket: "open", CreatedAt: "c", Path: "p"}},
 			Evidence: []EvidenceRef{{Path: "evidence/DEF-1/a.png", SHA256: "e3b0"}},
 		},
 		TestRun: &TestRunSpec{RunID: "TRUN-1", SecretEnv: "QA_PASSWORD", Loaded: true, Run: TestRun{
-			ID: "TRUN-1", AppID: "app", PlanID: &planID, PlanVersion: &planVersion, Title: "t", Status: "queued",
+			ID: "TRUN-1", ProjectID: "app", PlanID: &planID, PlanVersion: &planVersion, Title: "t", Status: "queued",
 			Env:   map[string]any{"base_url": "https://x", "account": map[string]any{"label": "qa", "secret_ref": "env:QA_PASSWORD"}, "retries": float64(2)},
 			Refs:  []RunRef{{Repo: "web", Ref: "main", SHA: "abc"}},
 			Steps: []RunStep{{Key: "login", Position: 1, Section: "s", Action: "a", Expected: "e", Exploratory: true, Status: "pass", Actual: "x", Evidence: []string{"e"}, DefectID: &defID, DefectStatus: &defStatus, Review: "r", ReviewNote: "n", UpdatedAt: "u"}},

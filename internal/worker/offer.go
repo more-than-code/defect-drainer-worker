@@ -255,6 +255,11 @@ func (w *Worker) evaluate(ctx context.Context, f workerproto.Offer, startedBy st
 		return declineOf(workerproto.DeclineBadSpec, err.Error())
 	}
 	spec, err := w.fetchSpec(ctx, f.JobID, f.JobToken)
+	var conflict *exec.KeyConflictError
+	if errors.As(err, &conflict) {
+		// §18: a key and its deprecated alias that differ.
+		return declineOf(workerproto.DeclineBadSpec, conflict.Error())
+	}
 	if err != nil {
 		return declineOf(workerproto.DeclineInternal, "spec fetch: "+err.Error())
 	}
@@ -345,7 +350,7 @@ func validateSpec(s exec.JobSpec) error {
 			return errors.New("invalid base branch")
 		}
 	}
-	for _, r := range s.App.RepoEntries {
+	for _, r := range s.Project.RepoEntries {
 		if !workerproto.ValidRelPath(r.Name) {
 			return errors.New("invalid repo entry name")
 		}
@@ -353,7 +358,7 @@ func validateSpec(s exec.JobSpec) error {
 			return errors.New("base_source local is refused for remote jobs")
 		}
 	}
-	for _, v := range s.App.VerifyCommands {
+	for _, v := range s.Project.VerifyCommands {
 		if v.Repo != "" && !workerproto.ValidRelPath(v.Repo) {
 			return errors.New("invalid verify repo")
 		}
@@ -368,7 +373,7 @@ func validateSpec(s exec.JobSpec) error {
 			}
 		}
 	}
-	if err := validatePreview(s.App); err != nil {
+	if err := validatePreview(s.Project); err != nil {
 		return err
 	}
 	if err := validateServices(s); err != nil {
@@ -471,7 +476,7 @@ func (w *Worker) applyPolicy(spec exec.JobSpec, offerAdapter, offerModel, starte
 			return declineOf(workerproto.DeclineBadSpec, "not a GitHub https repo: "+wt.Repo)
 		}
 	}
-	for _, r := range spec.App.RepoEntries {
+	for _, r := range spec.Project.RepoEntries {
 		if r.URL != "" && !pol.RepoAllowed(r.URL) {
 			return declineOf(workerproto.DeclinePolicyDenied, "repo not allowed: "+r.Name)
 		}
@@ -540,30 +545,30 @@ func (w *Worker) applyPolicy(spec exec.JobSpec, offerAdapter, offerModel, starte
 
 	// Sandbox: the stricter of the spec's and the host floor. exec runs
 	// strict or workspace; a read-only floor cannot run a job that writes.
-	eff := EffectiveSandbox(spec.App.Sandbox, pol.MinSandbox)
+	eff := EffectiveSandbox(spec.Project.Sandbox, pol.MinSandbox)
 	if eff == SandboxReadOnly {
 		return declineOf(workerproto.DeclinePolicyDenied, "host min_sandbox read-only")
 	}
-	if eff != spec.App.Sandbox && !(spec.App.Sandbox == "" && eff == SandboxStrict) {
+	if eff != spec.Project.Sandbox && !(spec.Project.Sandbox == "" && eff == SandboxStrict) {
 		notes = append(notes, fmt.Sprintf("host policy: sandbox narrowed to %s", eff))
 	}
-	out.App.Sandbox = eff
-	if eff != SandboxWorkspace && spec.App.SimulatorWrites {
-		out.App.SimulatorWrites = false
+	out.Project.Sandbox = eff
+	if eff != SandboxWorkspace && spec.Project.SimulatorWrites {
+		out.Project.SimulatorWrites = false
 		notes = append(notes, "host policy: simulator writes off")
 	}
 	// D1: only grok has a workspace profile. Every other adapter runs its
 	// CLI's own sandbox, strict, so the brief, the prompt and the
 	// NO-SCREENSHOT release all see strict.
-	if chosen != string(agentadapter.Grok) && (out.App.Sandbox != SandboxStrict || out.App.SimulatorWrites) {
-		out.App.Sandbox = SandboxStrict
-		out.App.SimulatorWrites = false
+	if chosen != string(agentadapter.Grok) && (out.Project.Sandbox != SandboxStrict || out.Project.SimulatorWrites) {
+		out.Project.Sandbox = SandboxStrict
+		out.Project.SimulatorWrites = false
 		notes = append(notes, "sandbox strict for "+chosen)
 	}
 
 	// Caps: clamped to max_turns and max_wall_sec.
-	if out.App.MaxTurns > pol.MaxTurns || (out.App.MaxTurns == 0 && pol.MaxTurns < DefaultMaxTurns) {
-		out.App.MaxTurns = pol.MaxTurns
+	if out.Project.MaxTurns > pol.MaxTurns || (out.Project.MaxTurns == 0 && pol.MaxTurns < DefaultMaxTurns) {
+		out.Project.MaxTurns = pol.MaxTurns
 		notes = append(notes, fmt.Sprintf("host policy: agent_max_turns clamped to %d", pol.MaxTurns))
 	}
 	if out.Caps.AgentMaxWallSec <= 0 || out.Caps.AgentMaxWallSec > pol.MaxWallSec {
@@ -596,11 +601,11 @@ func (w *Worker) applyPolicy(spec exec.JobSpec, offerAdapter, offerModel, starte
 	// Verify commands are org-admin shell: only with allow_verify_commands.
 	// VerifySkipped is the worker's own record: one the server sent is
 	// dropped first.
-	out.App.VerifySkipped, out.App.VerifySkippedCommands = "", 0
-	if len(out.App.VerifyCommands) > 0 && !pol.AllowVerifyCommands {
-		out.App.VerifySkipped = exec.VerifySkippedHostPolicy
-		out.App.VerifySkippedCommands = len(out.App.VerifyCommands)
-		out.App.VerifyCommands = nil
+	out.Project.VerifySkipped, out.Project.VerifySkippedCommands = "", 0
+	if len(out.Project.VerifyCommands) > 0 && !pol.AllowVerifyCommands {
+		out.Project.VerifySkipped = exec.VerifySkippedHostPolicy
+		out.Project.VerifySkippedCommands = len(out.Project.VerifyCommands)
+		out.Project.VerifyCommands = nil
 		out.Baseline = nil
 		notes = append(notes, "verify skipped by host policy")
 	}
@@ -620,7 +625,7 @@ func (w *Worker) applyPolicy(spec exec.JobSpec, offerAdapter, offerModel, starte
 	strip = append(strip, hostPushCredentials...)
 	out.StripEnv = sec.DenySet(h.keep(), strip)
 
-	domains, dropped := intersectHosts(out.App.AgentHosts, pol.AllowedDomains)
+	domains, dropped := intersectHosts(out.Project.AgentHosts, pol.AllowedDomains)
 	for _, d := range dropped {
 		notes = append(notes, "host policy: network host dropped: "+d)
 	}
@@ -639,7 +644,7 @@ func (w *Worker) applyPolicy(spec exec.JobSpec, offerAdapter, offerModel, starte
 // a ready postgres tool, or the job is declined (S8); it returns the
 // decline's detail, or "".
 func (w *Worker) applyServices(d *decision, pol Policy) string {
-	app := &d.spec.App
+	app := &d.spec.Project
 	if !app.StackOn() {
 		return ""
 	}
@@ -677,7 +682,7 @@ func (w *Worker) postgresStatus() workerproto.ToolStatus {
 // complete socket scan, re-run now so the job's masks are fresh. Otherwise
 // Browser is cleared with one job-log note and the job runs without it.
 func (w *Worker) applyBrowser(d *decision, pol Policy, adapter string) {
-	app := &d.spec.App
+	app := &d.spec.Project
 	if !app.Browser {
 		return
 	}
@@ -737,13 +742,13 @@ func intersectHosts(request, allowed []string) (keep, dropped []string) {
 	return keep, dropped
 }
 
-// maxPreviewCmd bounds AppSettings.PreviewCmd.
+// maxPreviewCmd bounds ProjectSettings.PreviewCmd.
 const maxPreviewCmd = 512
 
 // validatePreview is the bad_spec check of the browser fields. PreviewCmd
 // runs inside the agent's sandbox (the agent runs dd-shot), so it is not an
 // allow_verify_commands matter; it must still be one line.
-func validatePreview(a exec.AppSettings) error {
+func validatePreview(a exec.ProjectSettings) error {
 	if len(a.AgentHosts) > 0 && !validDomains(a.AgentHosts) {
 		return errors.New("invalid agentHosts")
 	}
@@ -786,7 +791,7 @@ var healthPathRe = regexp.MustCompile(`^/[A-Za-z0-9/._~%?=&-]{0,199}$`)
 // placeholders that refer to what exists. previewEnv and previewTimeoutSec
 // are checked even without services, which then ignore them.
 func validateServices(s exec.JobSpec) error {
-	a := s.App
+	a := s.Project
 	if a.PreviewTimeoutSec != 0 && (a.PreviewTimeoutSec < exec.MinPreviewTimeoutSec || a.PreviewTimeoutSec > exec.MaxPreviewTimeoutSec) {
 		return errors.New("previewTimeoutSec must be 30–300")
 	}
@@ -857,7 +862,7 @@ var signInMethods = []string{"POST", "PUT", "PATCH"}
 // credentials and selectors are single lines within their limits; the body
 // template uses only {random}, {services.<name>.url} and the {signin.*}
 // placeholders.
-func validateSignIn(a exec.AppSettings, names map[string]bool) error {
+func validateSignIn(a exec.ProjectSettings, names map[string]bool) error {
 	si := a.JobStackSignIn
 	if si == nil {
 		return nil
@@ -876,6 +881,8 @@ func validateSignIn(a exec.AppSettings, names map[string]bool) error {
 		return errors.New("jobStackSignIn: invalid successPath")
 	case !oneLine(si.Email, 1, exec.MaxSignInEmail):
 		return errors.New("jobStackSignIn: invalid email")
+	case si.GeneratedPassword():
+		// signin_random.v1: exactly "{random}", filled with the run's value.
 	case !oneLine(si.Password, exec.MinSignInPassword, exec.MaxSignInPassword):
 		return fmt.Errorf("jobStackSignIn: the password must be one line of %d–%d bytes", exec.MinSignInPassword, exec.MaxSignInPassword)
 	}

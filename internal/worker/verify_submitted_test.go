@@ -31,7 +31,7 @@ func vsSpec(jobID, ref string) dexec.JobSpec {
 	s.Mode = dexec.ModeVerifySubmitted
 	s.Worktrees[0].Branch = ""
 	s.SubmittedRefs = []dexec.SubmittedRef{{Repo: "app", Ref: ref}}
-	s.App.VerifyCommands = vsChecks
+	s.Project.VerifyCommands = vsChecks
 	return s
 }
 

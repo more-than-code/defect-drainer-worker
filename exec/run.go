@@ -160,7 +160,7 @@ func (r *run) importCutoff() time.Time {
 func (r *run) writeHandoff() error {
 	s := r.spec
 	if r.isTestRun() {
-		in := TestBriefInput{AppID: s.AppID, Worktrees: s.Worktrees}
+		in := TestBriefInput{ProjectID: s.ProjectID, Worktrees: s.Worktrees}
 		if s.TestRun != nil {
 			in.TestRunID = s.TestRun.RunID
 			in.Run = s.TestRun.Run
@@ -172,7 +172,7 @@ func (r *run) writeHandoff() error {
 	if r.sink.Gone() {
 		return nil
 	}
-	in := BatchFixBriefInput{DefectsRoot: s.DefectsRoot, GrokSandbox: s.App.Sandbox, Worktrees: s.Worktrees}
+	in := BatchFixBriefInput{DefectsRoot: s.DefectsRoot, GrokSandbox: s.Project.Sandbox, Worktrees: s.Worktrees}
 	// Only Claude's settings carry the host's network allow list.
 	if r.host.AgentAdapter().Name() == agentadapter.Claude {
 		in.AllowedDomains = r.host.AllowedDomains
@@ -183,16 +183,16 @@ func (r *run) writeHandoff() error {
 		in.Defects = s.Fix.Defects
 	}
 	if r.browserOn() {
-		in.Browser = &BrowserBrief{PreviewCmd: s.App.PreviewCmd, PreviewURL: s.App.PreviewURL}
-		stack := s.App.StackOn()
+		in.Browser = &BrowserBrief{PreviewCmd: s.Project.PreviewCmd, PreviewURL: s.Project.PreviewURL}
+		stack := s.Project.StackOn()
 		worker := ""
 		if stack {
 			if err := r.writeDDStack(); err != nil {
 				return err
 			}
-			in.Browser.Stack = &StackBrief{Services: s.App.JobStack, Postgres: s.App.NeedsPostgres(), TimeoutSec: s.App.PreviewTimeout(),
-				SignIn: s.App.JobStackSignIn}
-			if s.App.JobStackSignIn != nil {
+			in.Browser.Stack = &StackBrief{Services: s.Project.JobStack, Postgres: s.Project.NeedsPostgres(), TimeoutSec: s.Project.PreviewTimeout(),
+				SignIn: s.Project.JobStackSignIn}
+			if s.Project.JobStackSignIn != nil {
 				if r.host.ShotBin == "" {
 					return fmt.Errorf("stack sign-in: no dd-worker binary for dd-shot")
 				}
@@ -201,8 +201,8 @@ func (r *run) writeHandoff() error {
 		}
 		if err := WriteDDShot(s.Handoff, DDShot{
 			Browser: r.host.Browser, Dir: s.Worktrees[0].WorktreeAbs,
-			PreviewCmd: s.App.PreviewCmd, PreviewURL: s.App.PreviewURL,
-			Stack: stack, TimeoutSec: s.App.PreviewTimeout(), Worker: worker,
+			PreviewCmd: s.Project.PreviewCmd, PreviewURL: s.Project.PreviewURL,
+			Stack: stack, TimeoutSec: s.Project.PreviewTimeout(), Worker: worker,
 		}); err != nil {
 			return err
 		}
@@ -219,26 +219,35 @@ func (r *run) writeDDStack() error {
 		return err
 	}
 	s := r.spec
-	r.stackSecrets = secretForms(random)
-	if si := s.App.JobStackSignIn; si != nil {
-		r.stackSecrets = append(r.stackSecrets, secretForms(si.Password)...)
+	values := []string{random}
+	if si := s.Project.JobStackSignIn; si != nil && !si.GeneratedPassword() {
+		values = append(values, si.Password)
+	}
+	if r.hooks.StackSecrets != nil {
+		if err := r.hooks.StackSecrets(values); err != nil {
+			return err
+		}
+	}
+	r.stackSecrets = nil
+	for _, v := range values {
+		r.stackSecrets = append(r.stackSecrets, secretForms(v)...)
 	}
 	dirs := map[string]string{}
 	for _, w := range s.Worktrees {
 		dirs[w.Repo] = w.WorktreeAbs
 	}
 	c := DDStack{
-		Services: s.App.JobStack, PreviewEnv: s.App.PreviewEnv, Dirs: dirs,
-		Postgres: r.host.Postgres, TimeoutSec: s.App.PreviewTimeout(), Random: random,
-		SignIn: s.App.SignInValues(),
+		Services: s.Project.JobStack, PreviewEnv: s.Project.PreviewEnv, Dirs: dirs,
+		Postgres: r.host.Postgres, TimeoutSec: s.Project.PreviewTimeout(), Random: random,
+		SignIn: s.Project.SignInValues(random),
 	}
 	if err := WriteDDStack(s.Handoff, c); err != nil {
 		return err
 	}
-	if s.App.JobStackSignIn == nil {
+	if s.Project.JobStackSignIn == nil {
 		return nil
 	}
-	return WriteShotSignIn(s.Handoff, NewShotSignIn(s.App, c.placeholderValues()))
+	return WriteShotSignIn(s.Handoff, NewShotSignIn(s.Project, c.placeholderValues()))
 }
 
 // secretForms are the ways v can appear in output: as itself, and escaped
@@ -298,7 +307,7 @@ func redactEvent(e Event, value string) Event {
 // Browser, left on by the worker's policy, on a host with a browser, for a
 // Claude batch fix with a worktree. Local serve never sets Host.Browser.
 func (r *run) browserOn() bool {
-	return r.spec.App.Browser && r.host.Browser != "" && !r.isTestRun() && !r.spec.VerifySubmitted() && len(r.spec.Worktrees) > 0 &&
+	return r.spec.Project.Browser && r.host.Browser != "" && !r.isTestRun() && !r.spec.VerifySubmitted() && len(r.spec.Worktrees) > 0 &&
 		r.host.AgentAdapter().Name() == agentadapter.Claude
 }
 
@@ -324,7 +333,7 @@ func (r *run) complete(cutoff time.Time) (bool, []string) {
 		}
 		return testArtifactsComplete(r.spec.Handoff, r.spec.TestRun.Run.Steps, cutoff, r.secret)
 	}
-	return ArtifactsComplete(r.spec.Handoff, r.spec.DefectIDs, r.spec.App.Sandbox, cutoff)
+	return ArtifactsComplete(r.spec.Handoff, r.spec.DefectIDs, r.spec.Project.Sandbox, cutoff)
 }
 
 func (r *run) start() (Outcome, error) {
@@ -336,16 +345,16 @@ func (r *run) start() (Outcome, error) {
 	if err := r.status(PhaseHandoff); err != nil {
 		return stopOn(err)
 	}
-	sandbox := s.App.Sandbox
-	toolchainKind := s.App.Toolchain
-	maxTurns := s.App.MaxTurns
+	sandbox := s.Project.Sandbox
+	toolchainKind := s.Project.Toolchain
+	maxTurns := s.Project.MaxTurns
 	r.prepare()
 	turnsNote := "default"
 	if maxTurns > 0 {
 		turnsNote = strconv.Itoa(maxTurns)
 	}
-	appLine := LogLine{Text: fmt.Sprintf("app %s grok_sandbox=%s agent_toolchain=%s agent_max_turns=%s", s.AppID, sandbox, toolchainKind, turnsNote), Level: "info", Source: "DefectDrainer"}
-	if err := r.status(PhasePrepared, appLine); err != nil {
+	projectLine := LogLine{Text: fmt.Sprintf("project %s grok_sandbox=%s agent_toolchain=%s agent_max_turns=%s", s.ProjectID, sandbox, toolchainKind, turnsNote), Level: "info", Source: "DefectDrainer"}
+	if err := r.status(PhasePrepared, projectLine); err != nil {
 		return stopOn(err)
 	}
 	strip := s.StripEnv
@@ -369,7 +378,7 @@ func (r *run) start() (Outcome, error) {
 	var sandboxProfile string
 	var profileBody []byte
 	var profileNotes []string
-	if s.App.SimulatorWrites {
+	if s.Project.SimulatorWrites {
 		profile, err := WriteSimulatorSandboxProfile(handoff, sandbox, label)
 		if err != nil {
 			spawnLog("sandbox: job profile failed — skipped ("+err.Error()+")", "warn")
@@ -392,7 +401,7 @@ func (r *run) start() (Outcome, error) {
 	realByRepo := SnapshotWorktreeReals(wts)
 	gitDirByRepo := SnapshotGitDirs(wts)
 
-	verifyCommands := s.App.VerifyCommands
+	verifyCommands := s.Project.VerifyCommands
 	var baseline *VerificationRun
 	if !r.isTestRun() {
 		if s.Mode != ModeFresh && !s.VerifySubmitted() {
@@ -410,7 +419,7 @@ func (r *run) start() (Outcome, error) {
 				baseWts = s.BaselineWorktrees
 				baseReal = SnapshotWorktreeReals(baseWts)
 			}
-			vrun := RunVerification(r.ctx, verifyCommands, baseWts, filepath.Join(handoff, "baseline"), s.App.RepoEntries, provisioned.VerifyEnv, baseReal, func(line, level string) {
+			vrun := RunVerification(r.ctx, verifyCommands, baseWts, filepath.Join(handoff, "baseline"), s.Project.RepoEntries, provisioned.VerifyEnv, baseReal, func(line, level string) {
 				spawnLog("baseline "+line, level)
 			}, strip)
 			baseline = &vrun
@@ -481,9 +490,9 @@ func (r *run) start() (Outcome, error) {
 		browser := r.browserOn()
 		if browser {
 			// The preview's command and URL, never an app secret (B7).
-			if s.App.PreviewCmd != "" {
-				extra["DD_PREVIEW_CMD"] = s.App.PreviewCmd
-				extra["DD_PREVIEW_URL"] = s.App.PreviewURL
+			if s.Project.PreviewCmd != "" {
+				extra["DD_PREVIEW_CMD"] = s.Project.PreviewCmd
+				extra["DD_PREVIEW_URL"] = s.Project.PreviewURL
 			}
 			denyRead = append(denyRead, r.host.MaskedSockets...)
 		}
@@ -510,7 +519,7 @@ func (r *run) start() (Outcome, error) {
 			Timeout:    agentTimeout,
 			DenyRead:   denyRead,
 			Browser:    browser,
-			NoPreview:  browser && s.App.PreviewCmd == "",
+			NoPreview:  browser && s.Project.PreviewCmd == "",
 			// On a worker: the job's clone .git (read-only git) and its
 			// report evidence (spec §4.1 items 2 and 5).
 			ReadOnly:       r.host.ReadOnly,
@@ -772,7 +781,7 @@ func (r *run) afterFixLoop(fin loopFinish, log func(line, level string)) {
 	s := r.spec
 	harvest := &FixHarvest{}
 	if !fin.failed {
-		vrun := RunVerification(r.ctx, s.App.VerifyCommands, fin.wts, fin.handoff, s.App.RepoEntries, fin.verifyEnv, fin.realByRepo, log, s.StripEnv)
+		vrun := RunVerification(r.ctx, s.Project.VerifyCommands, fin.wts, fin.handoff, s.Project.RepoEntries, fin.verifyEnv, fin.realByRepo, log, s.StripEnv)
 		hygiene := MeasureDiffHygiene(fin.wts, fin.diffBase, log)
 		hygiene.StackSecret = r.diffAddsStackSecret(fin, log)
 		verdict := JudgeVerification(&vrun, fin.baseline)
@@ -783,10 +792,10 @@ func (r *run) afterFixLoop(fin loopFinish, log func(line, level string)) {
 		summary := "verify: " + SummarizeVerdict(verdict)
 		// D6: commands dropped by the host's policy are a skip, never a
 		// pass. The run records why and resolves nothing.
-		skipped := s.App.VerifySkipped != ""
+		skipped := s.Project.VerifySkipped != ""
 		if skipped {
-			vrun.Ran, vrun.Ok, vrun.SkippedReason = false, false, s.App.VerifySkipped
-			summary = fmt.Sprintf("verify: skipped by %s (%d command(s) configured)", s.App.VerifySkipped, s.App.VerifySkippedCommands)
+			vrun.Ran, vrun.Ok, vrun.SkippedReason = false, false, s.Project.VerifySkipped
+			summary = fmt.Sprintf("verify: skipped by %s (%d command(s) configured)", s.Project.VerifySkipped, s.Project.VerifySkippedCommands)
 			level = "warn"
 		}
 		cp := vrun

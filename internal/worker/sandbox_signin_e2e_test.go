@@ -18,11 +18,13 @@ import (
 
 // signInApp is a tiny app with a session cookie: a sign-in form posting to
 // /session, a JSON sign-in at /api/login, and /account, which redirects to
-// /login without the cookie.
-const signInApp = `import json, sys
+// /login without the cookie. The seed user's password is the one a seed
+// step wrote to seed-password, else a fixed one.
+const signInApp = `import json, os, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs
-EMAIL, PASSWORD = "seed@example.com", "seed-Pass!word1"
+EMAIL = "seed@example.com"
+PASSWORD = open("seed-password").read() if os.path.exists("seed-password") else "seed-Pass!word1"
 FORM = b'<!doctype html><title>login</title><form method=post action=/session><input id=email name=email><input id=password name=password type=password><button id=go>Sign in</button></form>'
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -62,7 +64,9 @@ HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 // the DevTools protocol, inside bwrap with a browser job's settings. A form
 // and an HTTP sign-in each screenshot the signed-in /account; a wrong
 // password fails the sign-in with its reason and writes no PNG. Nothing is
-// left running and the password is never printed. Run by
+// left running and the password is never printed. With a generated
+// password (signin_random.v1) a seed step sets the user's password from
+// {signin.password}, and the sign-in uses the same run value. Run by
 // packaging/test/sandbox_test.sh in the browser image, with the dd-worker
 // binary at DD_WORKER_BIN; skipped elsewhere.
 func TestDDShotSignInChromium(t *testing.T) {
@@ -85,16 +89,20 @@ func TestDDShotSignInChromium(t *testing.T) {
 		HTTP:        &dexec.SignInCall{Method: "POST", Path: "/api/login", BodyTemplate: `{"email":"{signin.email}","password":"{signin.password}"}`},
 		SuccessPath: "/account"}
 	wrong := func(si dexec.StackSignIn) *dexec.StackSignIn { si.Password = "not-the-password"; return &si }
+	generated := func(si dexec.StackSignIn) *dexec.StackSignIn { si.Password = dexec.PlaceholderRandom; return &si }
 	for _, c := range []struct {
 		name string
 		si   *dexec.StackSignIn
 		want []string // lines dd-shot prints, in order (prefixes)
 		pngs int
+		seed bool // a seed step sets the password from {signin.password}
 	}{
-		{"form", form, []string{"DD-SHOT SIGNIN OK form", "DD-SHOT OK DEF-1 fix-evidence/DEF-1/fix-01.png ", "DD-SHOT OK DEF-1 fix-evidence/DEF-1/fix-02.png "}, 2},
-		{"http", http, []string{"DD-SHOT SIGNIN OK http", "DD-SHOT OK DEF-1 fix-evidence/DEF-1/fix-01.png ", "DD-SHOT OK DEF-1 fix-evidence/DEF-1/fix-02.png "}, 2},
-		{"form, wrong password", wrong(*form), []string{"DD-SHOT FAIL DEF-1 signin still-on-signin"}, 0},
-		{"http, wrong password", wrong(*http), []string{"DD-SHOT FAIL DEF-1 signin http 401"}, 0},
+		{"form", form, []string{"DD-SHOT SIGNIN OK form", "DD-SHOT OK DEF-1 fix-evidence/DEF-1/fix-01.png ", "DD-SHOT OK DEF-1 fix-evidence/DEF-1/fix-02.png "}, 2, false},
+		{"http", http, []string{"DD-SHOT SIGNIN OK http", "DD-SHOT OK DEF-1 fix-evidence/DEF-1/fix-01.png ", "DD-SHOT OK DEF-1 fix-evidence/DEF-1/fix-02.png "}, 2, false},
+		{"form, wrong password", wrong(*form), []string{"DD-SHOT FAIL DEF-1 signin still-on-signin"}, 0, false},
+		{"http, wrong password", wrong(*http), []string{"DD-SHOT FAIL DEF-1 signin http 401"}, 0, false},
+		{"form, generated", generated(*form), []string{"DD-SHOT SIGNIN OK form", "DD-SHOT OK DEF-1 fix-evidence/DEF-1/fix-01.png ", "DD-SHOT OK DEF-1 fix-evidence/DEF-1/fix-02.png "}, 2, true},
+		{"http, generated", generated(*http), []string{"DD-SHOT SIGNIN OK http", "DD-SHOT OK DEF-1 fix-evidence/DEF-1/fix-01.png ", "DD-SHOT OK DEF-1 fix-evidence/DEF-1/fix-02.png "}, 2, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			tmp := t.TempDir()
@@ -106,15 +114,23 @@ func TestDDShotSignInChromium(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(handoff, "tmp"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			app := dexec.AppSettings{PreviewCmd: "exec sleep 300", PreviewURL: "http://127.0.0.1:5174",
-				JobStack:       []dexec.JobStackService{{Name: "web", Repo: "app", Start: "exec python3 app.py 5174", Port: 5174, Health: "/health"}},
-				JobStackSignIn: c.si}
-			st := dexec.DDStack{Services: app.JobStack, Dirs: map[string]string{"app": wt}, TimeoutSec: 60, Random: "r", SignIn: app.SignInValues()}
+			web := dexec.JobStackService{Name: "web", Repo: "app", Start: "exec python3 app.py 5174", Port: 5174, Health: "/health"}
+			if c.seed {
+				web.Seed = []string{`printf %s "$SEED_USER_PASSWORD" > seed-password`}
+				web.Env = map[string]string{"SEED_USER_PASSWORD": "{signin.password}"}
+			}
+			app := dexec.ProjectSettings{PreviewCmd: "exec sleep 300", PreviewURL: "http://127.0.0.1:5174",
+				JobStack: []dexec.JobStackService{web}, JobStackSignIn: c.si}
+			random, err := dexec.NewStackRandom()
+			if err != nil {
+				t.Fatal(err)
+			}
+			st := dexec.DDStack{Services: app.JobStack, Dirs: map[string]string{"app": wt}, TimeoutSec: 60, Random: random, SignIn: app.SignInValues(random)}
 			if err := dexec.WriteDDStack(handoff, st); err != nil {
 				t.Fatal(err)
 			}
-			vals := map[string]string{dexec.PlaceholderRandom: "r"}
-			for k, v := range app.SignInValues() {
+			vals := map[string]string{dexec.PlaceholderRandom: random}
+			for k, v := range app.SignInValues(random) {
 				vals[k] = v
 			}
 			if err := dexec.WriteShotSignIn(handoff, dexec.NewShotSignIn(app, vals)); err != nil {
@@ -146,7 +162,8 @@ func TestDDShotSignInChromium(t *testing.T) {
 					t.Fatalf("line %d %q, want prefix %q", i, lines[i], w)
 				}
 			}
-			if (err == nil) != (c.pngs > 0) || strings.Contains(string(out), password) {
+			used := c.si.PasswordFor(random)
+			if (err == nil) != (c.pngs > 0) || strings.Contains(string(out), used) || strings.Contains(string(out), random) {
 				t.Fatalf("exit %v for %d PNGs, or the password was printed", err, c.pngs)
 			}
 			pngs, _ := filepath.Glob(filepath.Join(handoff, "fix-evidence", "DEF-1", "*.png"))

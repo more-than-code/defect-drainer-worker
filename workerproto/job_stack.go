@@ -5,7 +5,7 @@ package workerproto
 // services) booted inside the agent's sandbox by the dd-stack helper.
 // Additive to v1.
 
-// CapJobStackV1: the worker understands JobSpec.App.jobStack,
+// CapJobStackV1: the worker understands JobSpec.Project.jobStack,
 // previewEnv and previewTimeoutSec, and declines a job whose services need
 // Postgres when its policy has no agent_postgres. Whether Postgres is ready
 // is the "postgres" tool's readiness, not this capability.

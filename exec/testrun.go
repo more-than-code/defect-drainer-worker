@@ -31,7 +31,7 @@ func ValidStepKey(k string) bool {
 // TestBriefInput is what a test job's BRIEF.md is built from.
 type TestBriefInput struct {
 	TestRunID string
-	AppID     string
+	ProjectID string
 	Worktrees []git.WorktreeBinding
 	Run       TestRun
 	// SecretEnv is set when the run's account password is injected.
@@ -283,7 +283,7 @@ func BuildTestBrief(in TestBriefInput) string {
 		"",
 		"- Run: " + in.TestRunID,
 		"- Title: " + run.Title,
-		"- App: " + in.AppID,
+		"- Project: " + in.ProjectID,
 		"- Plan: " + planID,
 		"- Plan version: " + planVersion,
 		"",

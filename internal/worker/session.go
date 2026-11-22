@@ -426,7 +426,7 @@ func (w *Worker) helloFrame() workerproto.Hello {
 	}
 	return workerproto.Hello{
 		Header: workerproto.NewHeader(workerproto.TypeHello), WorkerID: workerID,
-		Version: Version, Protocol: workerproto.Protocol, Capabilities: []string{workerproto.CapBlobsV1, workerproto.CapGitTokenV1, workerproto.CapBrowserV1, workerproto.CapVerifySubmittedV1, workerproto.CapJobStackV1},
+		Version: Version, Protocol: workerproto.Protocol, Capabilities: []string{workerproto.CapBlobsV1, workerproto.CapGitTokenV1, workerproto.CapBrowserV1, workerproto.CapVerifySubmittedV1, workerproto.CapJobStackV1, workerproto.CapProjectKeysV1, workerproto.CapSigninRandomV1},
 		MaxJobs: pol.MaxJobs, BusyJobIDs: w.busyIDs(), Adapters: st, Tools: w.toolsNow(), Policy: w.wirePolicy(pol),
 	}
 }

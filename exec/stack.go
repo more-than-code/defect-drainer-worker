@@ -102,11 +102,11 @@ type SignInCall struct {
 }
 
 // AppOrigin is the app URL without a trailing slash.
-func (a AppSettings) AppOrigin() string { return strings.TrimSuffix(a.PreviewURL, "/") }
+func (a ProjectSettings) AppOrigin() string { return strings.TrimSuffix(a.PreviewURL, "/") }
 
 // SignInValues are the {signin.*} placeholder values, or nil without a
-// Stack sign-in.
-func (a AppSettings) SignInValues() map[string]string {
+// Stack sign-in. random is the run's {random} value.
+func (a ProjectSettings) SignInValues(random string) map[string]string {
 	si := a.JobStackSignIn
 	if si == nil {
 		return nil
@@ -114,8 +114,21 @@ func (a AppSettings) SignInValues() map[string]string {
 	return map[string]string{
 		PlaceholderSignInURL:      a.AppOrigin() + si.URL,
 		PlaceholderSignInEmail:    si.Email,
-		PlaceholderSignInPassword: si.Password,
+		PlaceholderSignInPassword: si.PasswordFor(random),
 	}
+}
+
+// GeneratedPassword reports whether the password is generated per run
+// (signin_random.v1): exactly "{random}". Any other text is a literal.
+func (si StackSignIn) GeneratedPassword() bool { return si.Password == PlaceholderRandom }
+
+// PasswordFor is the password a run uses: its {random} value when the
+// password is generated, else the literal.
+func (si StackSignIn) PasswordFor(random string) string {
+	if si.GeneratedPassword() {
+		return random
+	}
+	return si.Password
 }
 
 // placeholderRe is any {token} of letters, digits and . _ : -: the shape a
@@ -151,10 +164,10 @@ func ServicePlaceholder(tok string) string {
 }
 
 // StackOn reports whether the app has a job stack.
-func (a AppSettings) StackOn() bool { return len(a.JobStack) > 0 }
+func (a ProjectSettings) StackOn() bool { return len(a.JobStack) > 0 }
 
 // NeedsPostgres reports whether any preview service needs Postgres.
-func (a AppSettings) NeedsPostgres() bool {
+func (a ProjectSettings) NeedsPostgres() bool {
 	for _, s := range a.JobStack {
 		if s.NeedsPostgres {
 			return true
@@ -164,7 +177,7 @@ func (a AppSettings) NeedsPostgres() bool {
 }
 
 // PreviewTimeout is the effective preview timeout in seconds.
-func (a AppSettings) PreviewTimeout() int {
+func (a ProjectSettings) PreviewTimeout() int {
 	if a.PreviewTimeoutSec == 0 {
 		return DefaultPreviewTimeoutSec
 	}

@@ -28,7 +28,7 @@ func TestPromptSandboxNotesPerAdapter(t *testing.T) {
 			t.Fatalf("headline = %q", got)
 		}
 	}
-	if got := SandboxHeadline(nil, "workspace"); got != "SANDBOX: --sandbox workspace (App Settings)." {
+	if got := SandboxHeadline(nil, "workspace"); got != "SANDBOX: --sandbox workspace (Project settings)." {
 		t.Fatalf("grok headline changed: %q", got)
 	}
 }

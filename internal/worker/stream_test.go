@@ -312,7 +312,7 @@ func TestSecretsNeverLeave(t *testing.T) {
 	spec.DefectIDs, spec.HarvestIDs = nil, nil
 	spec.Worktrees[0].Branch = ""
 	spec.TestRun = &dexec.TestRunSpec{RunID: "TRUN-1", Loaded: true, SecretEnv: "QA_PASSWORD",
-		Run: dexec.TestRun{ID: "TRUN-1", AppID: "app1", Title: "login", Env: map[string]any{"account": "env:QA_PASSWORD"},
+		Run: dexec.TestRun{ID: "TRUN-1", ProjectID: "app1", Title: "login", Env: map[string]any{"account": "env:QA_PASSWORD"},
 			Steps: []dexec.RunStep{{Key: "s1", Position: 1, Action: "log in", Expected: "dashboard"}}}}
 	h.offerJob(spec, nil)
 	h.waitDone(spec.JobID, 60*time.Second)
