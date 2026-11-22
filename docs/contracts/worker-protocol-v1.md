@@ -216,9 +216,10 @@ Server → worker:
 | `resume` | `specUrl` (the next run's spec, fetched with the frame's `job_token`; never inline) | `{}`. A new `progress` stream continues the job's `seq` |
 | `ship_preview` | none | `{"repos":[{"repo":"…","files":["…"],"message":"…"}]}` |
 | `diff` | `repo` | `{"repo":"…","diff":"…","truncated":false}`, with `diff` ≤ 512 KiB |
-| `ship` | `repos:[{repo, files[], message, title, body}]` | `{"prs":[<job.prs[] entry: kind:"pr", repo, branch, base, status, url, ghNumber, ghState, error>]}` |
+| `ship` | `repos:[{repo, files[], message, title, body, author?}]` | `{"prs":[<job.prs[] entry: kind:"pr", repo, branch, base, status, url, ghNumber, ghState, error>]}` |
 | `discard` | none | `{}`. Worktrees and handoff are removed |
 
+- **Commit author** (additive, worker 0.2.0-rc9): a `ship` repo may carry `author: {name, email}`. The worker commits with that author and keeps Defect Drainer (`dd-worker@users.noreply.defectdrainer.com`) as the committer; without it, both stay Defect Drainer. A name of 1 to 100 and an email of 3 to 254 characters, with no control character, `<` or `>`, an email with one `@` and no space; otherwise that repo's entry fails with `invalid commit author` and nothing is committed. The server sets it so a deploy check that admits only known accounts (Vercel on a private repo) accepts the commit. A worker before rc9 ignores the field and commits as Defect Drainer.
 - **With `gittoken.v1` (§14), a `ship` pushes only**: the worker answers per repo `{repo, branch, base, pushed, head_sha, error}`, and the server opens or updates the PR through the GitHub API and fills `job.prs[]`. The `gh pr create` path below is the pre-`gittoken.v1` behaviour.
 - **Ship is PR-only in v1:** push plus `gh pr create` from the worker, per D2. The Mac's `base_source=local` merge has no remote equivalent. A `ship` for a repo whose entry is `local` gets `ok:false, code:"bad_spec"`.
 

@@ -45,3 +45,59 @@ func TestShipCommitsAsDefectDrainer(t *testing.T) {
 		t.Fatalf("pushed commit identity %q, want %q for both", got, want)
 	}
 }
+
+// A ship repo with an author commits as that author, and Defect Drainer
+// stays the committer: a deploy check that wants a known account (Vercel on
+// a private repo) reads the author.
+func TestShipCommitsWithServerAuthor(t *testing.T) {
+	fakeGH(t)
+	agent := fixArtifacts(testDefect) + "echo changed >> ../worktrees/app/README.md\n" +
+		"cat '" + claudeFixture(t, "c1-basic") + "'\nexit 0\n"
+	h := newHarness(t, harnessOpts{agent: agent, noStart: true})
+	h.start(Timing{})
+	id := "bjob_author"
+	h.offerJob(fixSpec(id), nil)
+	h.waitDone(id, 60*time.Second)
+	author := &dexec.CommitAuthor{Name: "octo", Email: "42+octo@users.noreply.github.com"}
+	ship := dexec.Control{Kind: dexec.ControlShip, Repos: []dexec.ShipRepo{{Repo: "app", Files: []string{"README.md"}, Message: "Fix", Title: "Fix", Body: "b", Author: author}}}
+	r := h.controlAndWait(id, "rq_ship", ship, 1)
+	var res workerproto.ShipPushResult
+	if !r.OK || json.Unmarshal(r.Result, &res) != nil || len(res.Repos) != 1 || !res.Repos[0].Pushed {
+		t.Fatalf("ship %+v %s", r, r.Result)
+	}
+	origin := filepath.Join(h.tmp, "origin", "app.git")
+	out, err := exec.Command("git", "-C", origin, "log", "-1", "--format=%an <%ae>|%cn <%ce>", "dd/"+id+"/app").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "octo <42+octo@users.noreply.github.com>|" + commitName + " <" + commitEmail + ">"
+	if got := strings.TrimSpace(string(out)); got != want {
+		t.Fatalf("pushed commit identity %q, want %q", got, want)
+	}
+}
+
+func TestValidCommitAuthor(t *testing.T) {
+	for _, c := range []struct {
+		name, email string
+		ok          bool
+	}{
+		{"octo", "42+octo@users.noreply.github.com", true},
+		{"Joe Example", "joe@example.com", true},
+		{"", "joe@example.com", false},
+		{"Joe", "", false},
+		{"Joe <x>", "joe@example.com", false},
+		{"Joe\nX", "joe@example.com", false},
+		{" Joe", "joe@example.com", false},
+		{"Joe", "joe example.com", false},
+		{"Joe", "joe@ex ample.com", false},
+		{"Joe", "@example.com", false},
+		{"Joe", "joe@", false},
+		{"Joe", "a@b@c", false},
+		{"Joe", "joe@example.com>", false},
+		{strings.Repeat("a", 101), "joe@example.com", false},
+	} {
+		if got := validCommitAuthor(dexec.CommitAuthor{Name: c.name, Email: c.email}); got != c.ok {
+			t.Errorf("validCommitAuthor(%q, %q) = %v, want %v", c.name, c.email, got, c.ok)
+		}
+	}
+}
