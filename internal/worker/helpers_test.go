@@ -16,6 +16,7 @@ import (
 	dexec "github.com/more-than-code/defect-drainer-worker/exec"
 	"github.com/more-than-code/defect-drainer-worker/git"
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/config"
+	"github.com/more-than-code/defect-drainer-worker/internal/cgroup"
 	"github.com/more-than-code/defect-drainer-worker/internal/sandbox"
 	"github.com/more-than-code/defect-drainer-worker/workerproto"
 )
@@ -67,6 +68,7 @@ type harness struct {
 	// fake bwrap's argv (\x1f between args, \x1e after each run).
 	verify   func(context.Context) (sandbox.Launcher, error)
 	bwrapLog string
+	cgroups  func() (*cgroup.Manager, error)
 }
 
 type harnessOpts struct {
@@ -78,6 +80,8 @@ type harnessOpts struct {
 	// verify replaces the verify sandbox lookup (nil: the fake bwrap,
 	// ready).
 	verify func(context.Context) (sandbox.Launcher, error)
+	// cgroups is Options.Cgroups (nil: no per-job cgroups).
+	cgroups func() (*cgroup.Manager, error)
 }
 
 const defaultPolicy = `enabled = true
@@ -118,6 +122,7 @@ func newHarness(t *testing.T, o harnessOpts) *harness {
 	h.argv = filepath.Join(tmp, "argv.log")
 	h.agent = fakeAgent(t, tmp, h.argv, o.agent)
 	h.verify = o.verify
+	h.cgroups = o.cgroups
 	if h.verify == nil {
 		bw := fakeBwrap(t, tmp)
 		h.bwrapLog = filepath.Join(tmp, "bwrap.log")
@@ -169,6 +174,7 @@ func (h *harness) launch(timing Timing) {
 			GrokBin: filepath.Join(h.tmp, "no-such", "grok"), AgyBin: filepath.Join(h.tmp, "no-such", "agy")},
 		Timing: fastTiming(timing), Log: h.log, OwnerUID: rootUID,
 		VerifySandbox: h.verify,
+		Cgroups:       h.cgroups,
 	})
 	if err != nil {
 		h.t.Fatal(err)

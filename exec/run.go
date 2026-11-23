@@ -497,6 +497,7 @@ func (r *run) start() (Outcome, error) {
 			denyRead = append(denyRead, r.host.MaskedSockets...)
 		}
 		opts := &git.CodingAgentOpts{
+			CgroupFD:       r.host.CgroupFD,
 			ExtraEnv:       extra,
 			SandboxProfile: sandboxProfile,
 			ToolchainNotes: notes,
@@ -1063,6 +1064,7 @@ func (r *run) reviewLens(fin loopFinish, rev *ReviewRun, lens, brief string, ids
 	var installed *Proc
 	adapter := r.host.AgentAdapter()
 	res, err := git.StartReviewAgent(git.ReviewAgentOpts{
+		CgroupFD:   r.host.CgroupFD,
 		Adapter:    adapter,
 		Model:      r.spec.Model,
 		Worktrees:  reviewWorktrees(fin.wts),

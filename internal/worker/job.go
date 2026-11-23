@@ -17,6 +17,7 @@ import (
 	"github.com/more-than-code/defect-drainer-worker/exec"
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/config"
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/spool"
+	"github.com/more-than-code/defect-drainer-worker/internal/cgroup"
 	"github.com/more-than-code/defect-drainer-worker/workerproto"
 )
 
@@ -74,7 +75,9 @@ type job struct {
 	cancel      context.CancelFunc
 	proc        *exec.Proc
 	secretEnv   string
-	ctrlActive  int // controls running now: their lease is renewed by ping
+	// cg is the current run's cgroup (per-job limits); nil without one.
+	cg         *cgroup.Job
+	ctrlActive int // controls running now: their lease is renewed by ping
 	// gitTokens are this job's minted GitHub tokens (§14), keyed repo+access.
 	// Memory only: never in job.json, the spool or a result.
 	gitTokens map[string]cachedGitToken
@@ -233,6 +236,13 @@ func (s runSink) Untrack(p *exec.Proc) {
 // enqueueLocked adds e to the batch and flushes on a done, a full batch, or
 // the batch interval (§6.1).
 func (j *job) enqueueLocked(e exec.Event) {
+	if e.Kind == exec.EventDone {
+		if line := j.oomLineLocked(); line != nil {
+			oom := logEvent(*line, "warn")
+			oom.JobID = j.id
+			j.pending = append(j.pending, oom)
+		}
+	}
 	e.JobID = j.id
 	j.pending = append(j.pending, e)
 	if e.Kind == exec.EventDone || len(j.pending) >= workerproto.MaxBatchEvents {
@@ -316,6 +326,7 @@ func (j *job) flushLocked() {
 			j.meta.EndedAt = time.Now().UTC().Format(time.RFC3339)
 			j.w.releaseSecretEnv(j.secretEnv)
 			j.secretEnv = ""
+			j.releaseCgroupLocked()
 			j.pending = nil
 		}
 		_ = j.saveMetaLocked()
@@ -567,6 +578,7 @@ func (j *job) leaseLost() {
 	_ = j.saveMetaLocked()
 	j.w.releaseSecretEnv(j.secretEnv)
 	j.secretEnv = ""
+	j.releaseCgroupLocked()
 	j.mu.Unlock()
 	_ = os.RemoveAll(j.w.opts.Paths.JobControls(j.id))
 	if p != nil {

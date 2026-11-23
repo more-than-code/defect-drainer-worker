@@ -33,6 +33,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/more-than-code/defect-drainer-worker/git"
 )
 
 // ProxyPort is where the egress bridge listens inside the sandbox. The
@@ -134,6 +136,9 @@ type Run struct {
 	Env []string
 	// ProxySock is the egress proxy's socket ("": no network at all).
 	ProxySock string
+	// CgroupFD is the job's cgroup v2 dir bwrap starts in (0: the
+	// worker's own), so the command counts against the job's limits.
+	CgroupFD int
 }
 
 // Args is the bwrap argument list for r (after the bwrap binary), or an
@@ -313,6 +318,7 @@ func (l Launcher) Command(ctx context.Context, r Run) (*Proc, error) {
 	cmd.Env = []string{}
 	cmd.ExtraFiles = []*os.File{readyW, filter} // fd 3, fd seccompFD
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	git.IntoCgroup(cmd.SysProcAttr, r.CgroupFD)
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil

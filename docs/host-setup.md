@@ -211,6 +211,18 @@ equals `sha256sum /etc/dd-worker/policy.toml`.
   (`bad_allowed_models`).
 - **Verify:** a project's verify commands run in a separate sandbox, not the
   agent's; see [Verify sandbox](#verify-sandbox).
+- **Kernel calls** (from 0.2.0-rc10): the unit's seccomp filter
+  (`SystemCallFilter`) covers the agent and everything it starts. Calls no
+  job needs fail with `EPERM`: setting the clock, kernel modules, kexec and
+  reboot, swap, raw I/O ports, BPF, `perf_event_open`, keyrings,
+  `userfaultfd`, file handles, quotas, accounting, the kernel log and
+  io_uring, plus calls from another architecture's table. Mounts and
+  namespaces stay allowed, because the agent's own sandbox (bubblewrap)
+  needs them. Seccomp limits the kernel, not what the agent does with
+  allowed calls: deleting files in its worktree or fetching from an allowed
+  host are bounded by the sandbox's write paths and the network list above.
+- **Resources:** the agent and everything it starts share the job's memory,
+  task and CPU limits; see [Resource limits](#resource-limits).
 
 ### Verify sandbox
 
@@ -246,8 +258,8 @@ What a verify command can reach:
   other jobs, and can't make a user namespace of its own. A timeout
   (20 minutes per command) or a cancel kills every process the command
   started. Each command may open 8192 files, run 2048 processes and write
-  files up to 8 GiB. Memory isn't capped by the sandbox: the systemd unit's
-  limits apply to the whole worker.
+  files up to 8 GiB. Memory, tasks and CPU count against the job's limits
+  (see Resource limits), since the sandbox starts in the job's cgroup.
 - **Kernel calls:** bwrap loads a seccomp filter before the command starts,
   and nothing inside can lift it. Calls a build or test never needs fail with
   `EPERM`: mounting, changing root, creating or joining a namespace (`unshare`,
@@ -303,6 +315,43 @@ the server it can run checks (`verify_sandbox.v1`). `dd-worker status`
 prints `verify sandbox: ready`, or `unavailable (<reason>)`, for example
 `unavailable (bwrap: not found)`. A macOS worker has no verify sandbox: it
 skips every check.
+
+### Resource limits
+
+From 0.2.0-rc10 the systemd unit bounds the whole worker, and the worker
+bounds each job.
+
+- **The whole worker** (`dd-worker.service`): at most 90% of the host's
+  memory (`MemoryMax`, reclaimed hard from 80%, `MemoryHigh`), at most 8192
+  processes and threads (`TasksMax`), and half the default CPU weight, so
+  sshd and the rest of the host stay responsive under a runaway build. When
+  the kernel kills a process for memory, the worker keeps running
+  (`OOMPolicy=continue`).
+- **Each job**: systemd delegates the unit's cgroup to `dd-worker`
+  (`Delegate=memory pids cpu`, cgroup v2, Linux 5.7 or newer). At start the
+  worker moves itself into a `supervisor` child and gives every run of a job
+  its own child cgroup. The agent, its reviewers and the verify sandbox
+  start in it, so everything they start (the browser, the job stack, a
+  build) shares the job's limits. When the run ends, anything left in it is
+  killed and the cgroup removed. The agent's sandbox may not write the
+  cgroup tree.
+
+  | `policy.toml` key | Limit | Default |
+  |---|---|---|
+  | `job_memory_max` | memory, as `"3G"`, `"512M"` or bytes (at least `"256M"`) | 75% of the host's RAM, shared by `max_jobs` |
+  | `job_tasks_max` | processes and threads (64 to 1048576) | 4096 |
+  | `job_cpu_percent` | CPU time, 100 per CPU (`150`: one and a half) | none (the unit's CPU weight applies) |
+
+  A job that reaches its memory limit has processes killed by the kernel
+  (only its own), and the job log says `job limits: the job reached its
+  memory limit`. The job log's first lines name the limits it runs with.
+
+`dd-worker status` prints `job limits: memory 3 GiB, 4096 tasks per job`, or
+`off (<reason>)` when the worker can't set them: an older unit without
+`Delegate=`, cgroup v1, a kernel before 5.7, or a worker started by hand
+rather than by systemd. Jobs then run under the unit's limits only. A policy
+that sets any `job_*` key is stricter: while the limits are off, the worker
+declines every job (`policy_denied`, with the reason in its log).
 
 ### After-fix screenshots
 
@@ -507,6 +556,8 @@ before rolling back past rc9. They run verify commands unsandboxed, and only
 with `allow_verify_commands = true`: leave that key out (or false) on a host
 you roll back. A host that never set `verify_commands` and keeps
 `allow_verify_commands = false` skips verify on every version.
+Versions before 0.2.0-rc10 refuse `job_memory_max`, `job_tasks_max` and
+`job_cpu_percent` the same way: remove them before rolling back past rc10.
 
 ## Remove
 

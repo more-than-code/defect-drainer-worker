@@ -28,6 +28,7 @@ import (
 
 	"github.com/more-than-code/defect-drainer-worker/exec"
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/config"
+	"github.com/more-than-code/defect-drainer-worker/internal/cgroup"
 	"github.com/more-than-code/defect-drainer-worker/internal/shot"
 	"github.com/more-than-code/defect-drainer-worker/internal/worker"
 )
@@ -177,7 +178,7 @@ func cmdRun(args []string, stderr io.Writer) int {
 	// scrubOwnEnv then drops it, so no child learns where the copy is.
 	p.CredentialsDir = os.Getenv("CREDENTIALS_DIRECTORY")
 	scrubOwnEnv()
-	w, err := worker.New(worker.Options{Paths: *p, Adapters: a, Log: stderr})
+	w, err := worker.New(worker.Options{Paths: *p, Adapters: a, Log: stderr, Cgroups: cgroup.Open})
 	if err != nil {
 		fmt.Fprintln(stderr, "run:", err)
 		return exitFail
@@ -270,6 +271,9 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "busy jobs:  %s\n", busy)
 	if snap.VerifySandbox != "" {
 		fmt.Fprintf(stdout, "verify sandbox: %s\n", snap.VerifySandbox)
+	}
+	if snap.JobLimits != "" {
+		fmt.Fprintf(stdout, "job limits: %s\n", snap.JobLimits)
 	}
 	return code
 }
