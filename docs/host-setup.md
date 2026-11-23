@@ -248,6 +248,18 @@ What a verify command can reach:
   started. Each command may open 8192 files, run 2048 processes and write
   files up to 8 GiB. Memory isn't capped by the sandbox: the systemd unit's
   limits apply to the whole worker.
+- **Kernel calls:** bwrap loads a seccomp filter before the command starts,
+  and nothing inside can lift it. Calls a build or test never needs fail with
+  `EPERM`: mounting, changing root, creating or joining a namespace (`unshare`,
+  `setns`, `clone` with a `CLONE_NEW*` flag), loading kernel code (modules,
+  kexec), BPF, `perf_event_open`, keyrings, `userfaultfd`, file handles
+  (`open_by_handle_at`), and setting the clock, swap, quotas, accounting, the
+  kernel log or the power state. `clone3` and io_uring fail with `ENOSYS`, so
+  libc falls back to `clone` and Node's libuv to its thread pool. A call
+  through another architecture's table (i386 or x32 on amd64, arm32 on arm64)
+  is refused. `ptrace` stays allowed: the sandbox has its own PID namespace,
+  and sanitizers and debuggers need it. The self-test checks that the filter
+  is loaded; without it the sandbox is unavailable.
 - **Environment:** built for the check, not inherited: `PATH`, an empty
   `HOME`, `TMPDIR`, `LANG`, `CI=1`, the proxy variables, and cache dirs for
   npm, Go, pip, pub, cargo and XDG. Nothing from `secrets.env`, no adapter

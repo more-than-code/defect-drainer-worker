@@ -122,7 +122,7 @@ func newHarness(t *testing.T, o harnessOpts) *harness {
 		bw := fakeBwrap(t, tmp)
 		h.bwrapLog = filepath.Join(tmp, "bwrap.log")
 		h.verify = func(context.Context) (sandbox.Launcher, error) {
-			return sandbox.Launcher{Bwrap: bw, Socat: "/bin/true"}, nil
+			return sandbox.Launcher{Bwrap: bw, Socat: "/bin/true", Seccomp: []byte{0}}, nil
 		}
 	}
 	if !o.noStart {
@@ -386,7 +386,7 @@ while (@ARGV) {
 	if ($a eq "--chdir") { $dir = shift @ARGV }
 	elsif ($a eq "--setenv") { my $k = shift @ARGV; $env{$k} = shift @ARGV }
 	elsif ($a =~ /^--(ro-bind|bind|dev-bind)$/) { shift @ARGV; shift @ARGV }
-	elsif ($a =~ /^--(tmpfs|proc|dev|cap-drop|size)$/) { shift @ARGV }
+	elsif ($a =~ /^--(tmpfs|proc|dev|cap-drop|size|seccomp)$/) { shift @ARGV }
 }
 # The real wrapper says it reached the command on fd 3.
 if (open(my $r, ">&=", 3)) { print $r "ready\n"; close($r); }

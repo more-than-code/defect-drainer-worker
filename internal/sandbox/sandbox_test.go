@@ -234,3 +234,17 @@ func hiddenIn(args []string, p string) bool {
 	}
 	return false
 }
+
+func TestSeccompArgAndFailClosed(t *testing.T) {
+	args, err := Launcher{Bwrap: "bwrap", Seccomp: []byte{0}}.Args(Run{Command: "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(args, "--seccomp") || args[slices.Index(args, "--seccomp")+1] != "4" {
+		t.Fatalf("no --seccomp 4 in %q", args)
+	}
+	_, err = Launcher{Bwrap: "/bin/true"}.Command(t.Context(), Run{Command: "true"})
+	if !errors.Is(err, ErrUnavailable) || Reason(err) != "seccomp: no filter" {
+		t.Fatalf("a launcher without a filter: %v", err)
+	}
+}

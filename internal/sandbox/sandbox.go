@@ -15,7 +15,8 @@
 //
 // The command runs in a new PID namespace whose first process is bwrap
 // itself, with --die-with-parent: killing the launcher kills every process
-// the command started.
+// the command started. bwrap loads a seccomp filter (seccomp.go) before the
+// wrapper runs: no mounts, namespaces, kernel code, BPF, perf or keyrings.
 package sandbox
 
 import (
@@ -75,7 +76,13 @@ type Launcher struct {
 	// --disable-userns (no further user namespaces inside).
 	Size          bool
 	DisableUserns bool
+	// Seccomp is the filter bwrap loads with --seccomp (seccompFilter). A
+	// launcher without one refuses to run: the sandbox fails closed.
+	Seccomp []byte
 }
+
+// seccompFD is the fd bwrap reads the filter from (fd 3 is "ready").
+const seccompFD = 4
 
 // Find looks the tools up on PATH. A host without them, or not Linux, has
 // no sandbox, and verify is skipped there.
@@ -91,7 +98,11 @@ func Find() (Launcher, error) {
 	if err != nil {
 		return Launcher{}, fmt.Errorf("%w: socat: not found", ErrUnavailable)
 	}
-	l := Launcher{Bwrap: bw, Socat: so}
+	filter, err := seccompFilter()
+	if err != nil {
+		return Launcher{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	l := Launcher{Bwrap: bw, Socat: so, Seccomp: filter}
 	if help, err := exec.Command(bw, "--help").CombinedOutput(); err == nil {
 		l.Size = strings.Contains(string(help), "--size")
 		l.DisableUserns = strings.Contains(string(help), "--disable-userns")
@@ -185,6 +196,9 @@ func (l Launcher) Args(r Run) ([]string, error) {
 	if r.Dir != "" {
 		args = append(args, "--chdir", r.Dir)
 	}
+	if len(l.Seccomp) > 0 {
+		args = append(args, "--seccomp", strconv.Itoa(seccompFD))
+	}
 	args = append(args, "--clearenv")
 	for _, kv := range r.Env {
 		k, v, ok := strings.Cut(kv, "=")
@@ -269,6 +283,7 @@ type Proc struct {
 	Cmd    *exec.Cmd
 	readyR *os.File
 	readyW *os.File
+	filter *os.File
 	ready  chan bool
 }
 
@@ -277,18 +292,26 @@ func (l Launcher) Command(ctx context.Context, r Run) (*Proc, error) {
 	if l.Bwrap == "" || (r.ProxySock != "" && l.Socat == "") {
 		return nil, fmt.Errorf("%w: bwrap: not found", ErrUnavailable)
 	}
+	if len(l.Seccomp) == 0 {
+		return nil, fmt.Errorf("%w: seccomp: no filter", ErrUnavailable)
+	}
 	args, err := l.Args(r)
 	if err != nil {
 		return nil, err
 	}
+	filter, err := filterFile(l.Seccomp)
+	if err != nil {
+		return nil, fmt.Errorf("%w: seccomp: %v", ErrUnavailable, err)
+	}
 	readyR, readyW, err := os.Pipe()
 	if err != nil {
+		_ = filter.Close()
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	cmd := exec.CommandContext(ctx, l.Bwrap, args...)
 	cmd.Dir = "/"
 	cmd.Env = []string{}
-	cmd.ExtraFiles = []*os.File{readyW} // fd 3
+	cmd.ExtraFiles = []*os.File{readyW, filter} // fd 3, fd seccompFD
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
@@ -300,13 +323,33 @@ func (l Launcher) Command(ctx context.Context, r Run) (*Proc, error) {
 		return cmd.Process.Kill()
 	}
 	cmd.WaitDelay = waitDelay
-	return &Proc{Cmd: cmd, readyR: readyR, readyW: readyW, ready: make(chan bool, 1)}, nil
+	return &Proc{Cmd: cmd, readyR: readyR, readyW: readyW, filter: filter, ready: make(chan bool, 1)}, nil
+}
+
+// filterFile is the filter as a read end of a pipe holding all of it: a
+// few hundred bytes, well under the pipe's buffer, so the write never
+// blocks. bwrap reads it to EOF.
+func filterFile(prog []byte) (*os.File, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	_, err = w.Write(prog)
+	if cerr := w.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = r.Close()
+		return nil, err
+	}
+	return r, nil
 }
 
 // Start starts the sandbox.
 func (p *Proc) Start() error {
 	err := p.Cmd.Start()
 	_ = p.readyW.Close()
+	_ = p.filter.Close()
 	if err != nil {
 		_ = p.readyR.Close()
 		p.ready <- false

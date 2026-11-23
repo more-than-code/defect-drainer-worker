@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +71,8 @@ func (l Launcher) SelfTest(ctx context.Context) error {
 		`echo "R:$(` + ask(selfTestRefused) + `)"`,
 		`if cat ` + filepath.Join(secret, "key") + ` >/dev/null 2>&1; then echo SECRET; fi`,
 		`if touch ` + filepath.Join(ro, "w") + ` 2>/dev/null; then echo ROWRITE; fi`,
+		`echo "F:$(sed -n 's/^Seccomp_filters:[[:space:]]*//p' /proc/self/status)"`,
+		`echo "M:$(sed -n 's/^Seccomp:[[:space:]]*//p' /proc/self/status)"`,
 		`touch ./ok`,
 	}, "\n")
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -109,10 +112,35 @@ func (l Launcher) SelfTest(ctx context.Context) error {
 	case strings.Contains(text, "ROWRITE"):
 		return fmt.Errorf("%w: bwrap: a read-only dir was writable", ErrUnavailable)
 	}
+	if !filterLoaded(text) {
+		return fmt.Errorf("%w: seccomp: the filter was not loaded", ErrUnavailable)
+	}
 	if _, err := os.Stat(filepath.Join(work, "ok")); err != nil {
 		return fmt.Errorf("%w: bwrap: the work dir is not writable", ErrUnavailable)
 	}
 	return nil
+}
+
+// filterLoaded reports whether the self-test's command ran under one more
+// seccomp filter than this process (the systemd unit may add its own). A
+// kernel without Seccomp_filters (before 5.9) shows only the mode: filter
+// mode (2) inside is then accepted when this process has none.
+func filterLoaded(text string) bool {
+	field := func(src, prefix string) string {
+		for _, l := range strings.Split(src, "\n") {
+			if v, ok := strings.CutPrefix(l, prefix); ok {
+				return strings.TrimSpace(v)
+			}
+		}
+		return ""
+	}
+	status, _ := os.ReadFile("/proc/self/status")
+	inN, _ := strconv.Atoi(field(text, "F:"))
+	if own := field(string(status), "Seccomp_filters:"); own != "" {
+		n, err := strconv.Atoi(own)
+		return err == nil && inN > n
+	}
+	return field(text, "M:") == "2" && field(string(status), "Seccomp:") == "0"
 }
 
 // Reason is err as `dd-worker status` and the hello show it.
