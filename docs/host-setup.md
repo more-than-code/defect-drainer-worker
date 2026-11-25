@@ -160,6 +160,8 @@ equals `sha256sum /etc/dd-worker/policy.toml`.
 
 ### What a job's agent can reach
 
+Jobs are isolated with OS sandboxes, not containers; [ADR 0001](adr/0001-job-isolation-without-containers.md) explains why and compares Docker, Podman, gVisor and microVMs.
+
 - **Sandbox:** every agent except grok runs its CLI's own sandbox, `strict`,
   whatever the project asks for. The agent writes only its job's handoff and
   worktrees.
