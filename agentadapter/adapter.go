@@ -312,6 +312,22 @@ type HostLimiter interface {
 	HostUnsupported() string
 }
 
+// Confiner is implemented by an adapter whose Prepare and Command enforce
+// Task.DenyRead, Task.DenyWrite and Task.AllowedDomains in the CLI's own
+// sandbox (the shell and the file tools). An adapter without it may ignore
+// those lists, so a worker that shares one uid with the agent must not run
+// it.
+type Confiner interface {
+	EnforcesTaskConfinement() bool
+}
+
+// Confines reports whether a enforces the task's deny lists and egress
+// allowlist.
+func Confines(a Adapter) bool {
+	c, ok := a.(Confiner)
+	return ok && c.EnforcesTaskConfinement()
+}
+
 // HostNote is a's host marker, "" when a runs here.
 func HostNote(a Adapter) string {
 	if h, ok := a.(HostLimiter); ok {

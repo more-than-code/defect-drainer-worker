@@ -235,6 +235,10 @@ func containsAny(dir string, dirs []string) bool {
 	return false
 }
 
+// EnforcesTaskConfinement is true: Prepare writes DenyRead, DenyWrite and
+// AllowedDomains into the job's settings for the shell and the file tools.
+func (a *Adapter) EnforcesTaskConfinement() bool { return true }
+
 // Prepare writes the settings file (outside the handoff, so the agent cannot
 // widen its own rules) and, in API-key mode, the per-job config dir. It runs
 // before every spawn, so the file is always DD's.

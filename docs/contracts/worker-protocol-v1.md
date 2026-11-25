@@ -135,8 +135,9 @@ Server → worker: `{"v":1,"type":"hello_ok","protocol":1,"heartbeat_sec":20,"se
   - outstanding offers plus busy jobs under `max_jobs`;
   - the adapter rule (Q4) holds.
 - **Q4, adapter rule:**
-  - the app's agent setting is **empty**: a candidate needs at least one adapter that is both ready and in `policy.adapters`. The worker picks the first ready one in `policy.adapters` order. Its default order is `claude, grok, codex, antigravity`.
+  - the app's agent setting is **empty**: a candidate needs at least one adapter that is both ready and in `policy.adapters`. The worker picks the first ready one in `policy.adapters` order that confines its agent (below). Its default order is `claude, grok, codex, antigravity`.
   - the setting is **set**: that adapter must be ready **and** allowed by `policy.adapters`. There is no fallback.
+  - either way, the worker runs only an adapter that puts the job's deny lists and egress allowlist into its CLI's sandbox (`agentadapter.Confines`; today `claude` only), because the agent shares the worker's uid. It declines any other with `policy_denied`, on a fresh offer and on a resume.
 - **Choice:** the candidate with the fewest active jobs; ties go to the earliest `last_seen`.
 - **No candidate:** the job stays `queued`, `queued_reason:"no_worker"`, with a `queued_detail` naming why (for example `worker-1: claude signed_out`).
 - **Declines:** a `decline` or a timeout excludes that worker for that job, and the server tries the next candidate. Once every candidate has declined, the job is `queued no_worker` with the decline reasons in `queued_detail`. It's re-tried when any worker sends `status` or `hello`.

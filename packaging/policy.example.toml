@@ -10,7 +10,8 @@ enabled = true
 orgs = ["more-than-code"]
 
 # Coding agents this host runs. pi hosts run Claude with an API key
-# (secrets.env); grok and antigravity are not supported on workers yet.
+# (secrets.env). The worker declines grok and antigravity jobs: those CLIs
+# do not enforce the worker's deny lists and egress allowlist yet.
 adapters = ["claude"]
 
 # Repos this host may work on. Unset or empty means no repo: the worker
