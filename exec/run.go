@@ -350,13 +350,18 @@ func (r *run) start() (Outcome, error) {
 	if err := r.writeHandoff(); err != nil {
 		return Outcome{}, err
 	}
-	if s.Messaging != nil {
-		if err := os.WriteFile(filepath.Join(handoff, "MESSAGES.md"), []byte(MessagesMarkdown(s.Messaging.Interactive())), 0o644); err != nil {
-			return Outcome{}, err
-		}
-	}
 	if err := r.status(PhaseHandoff); err != nil {
 		return stopOn(err)
+	}
+	// After the handoff check: a job deleted while the brief was written
+	// has no handoff left, and that is a quiet stop, not a failure.
+	if s.Messaging != nil {
+		if err := os.WriteFile(filepath.Join(handoff, "MESSAGES.md"), []byte(MessagesMarkdown(s.Messaging.Interactive())), 0o644); err != nil {
+			if r.sink.Cancelled() {
+				return Outcome{}, nil
+			}
+			return Outcome{}, err
+		}
 	}
 	sandbox := s.Project.Sandbox
 	toolchainKind := s.Project.Toolchain
