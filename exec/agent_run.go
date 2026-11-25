@@ -198,7 +198,10 @@ type LoopState struct {
 	Elapsed, MaxWall time.Duration
 	ExitErr          error
 	SawMaxTurns      bool
-	Complete         bool
+	// Interrupted: a person stopped the agent mid-step to send a message
+	// (Send now). Its non-zero exit is not a failure.
+	Interrupted bool
+	Complete    bool
 	// Blocked: NOTES.md has a fresh BLOCKED: line.
 	Blocked bool
 	// NoProgress: this iteration's fingerprint and missing list equal the
@@ -227,7 +230,7 @@ type LoopState struct {
 // and iteration caps because it is the money rule.
 func NextLoopStop(st LoopState) string {
 	switch {
-	case st.ExitErr != nil && !st.SawMaxTurns:
+	case st.ExitErr != nil && !st.SawMaxTurns && !st.Interrupted:
 		return StoppedByExit
 	case st.Complete:
 		return StoppedByArtifacts

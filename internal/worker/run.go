@@ -77,6 +77,8 @@ func (j *job) launch(d decision, leaseID string) {
 	}
 	j.gen++
 	gen := j.gen
+	// Messages a previous run never took are the server's to resend (§21).
+	j.inbox, j.interrupt = nil, false
 	j.live = true
 	j.cancelled = false
 	j.doneSpooled = false
@@ -115,10 +117,14 @@ func (j *job) launch(d decision, leaseID string) {
 		j.secretEnv = spec.TestRun.SecretEnv
 		j.mu.Unlock()
 	}
-	j.mu.Lock()
-	j.meta.Spec = spec
-	_ = j.saveMetaLocked()
-	j.mu.Unlock()
+	if !spec.IsChat() {
+		// A chat run keeps the fix's spec as the job's: diff, ship and a
+		// later Resume read it, and job.json never holds a chat's images.
+		j.mu.Lock()
+		j.meta.Spec = spec
+		_ = j.saveMetaLocked()
+		j.mu.Unlock()
+	}
 
 	eh := d.host.host(w.opts.Paths, j.id, spec.Model, spec.Worktrees, d.domains)
 	// Per-job limits (DEF-…-68ru): the agent, reviewers and verify start
@@ -211,15 +217,43 @@ func (j *job) setup(ctx context.Context, in exec.JobSpec) (exec.JobSpec, error) 
 	if err := os.MkdirAll(spec.Handoff, 0o755); err != nil {
 		return spec, err
 	}
-	wts := make([]git.WorktreeBinding, 0, len(spec.Worktrees))
-	for _, in := range spec.Worktrees {
-		b, err := j.cutWorktree(ctx, spec, in)
+	if spec.IsChat() {
+		// A chat run reads the job's own worktrees as the fix left them,
+		// with the bindings and diff base the fix run resolved: no base
+		// fetch, and nothing that moves what diff and ship compare against.
+		j.mu.Lock()
+		prior := j.meta.Spec
+		j.mu.Unlock()
+		wts, err := chatWorktrees(prior, spec)
 		if err != nil {
 			return spec, err
 		}
-		wts = append(wts, b)
+		spec.Worktrees = wts
+		spec.DiffBase = map[string]string{}
+		for k, v := range prior.DiffBase {
+			spec.DiffBase[k] = v
+		}
+	} else {
+		wts := make([]git.WorktreeBinding, 0, len(spec.Worktrees))
+		for _, in := range spec.Worktrees {
+			b, err := j.cutWorktree(ctx, spec, in)
+			if err != nil {
+				return spec, err
+			}
+			wts = append(wts, b)
+		}
+		spec.Worktrees = wts
 	}
-	spec.Worktrees = wts
+	if spec.Chat != nil {
+		j.mu.Lock()
+		tok := j.token
+		j.mu.Unlock()
+		msgs, err := w.fetchMessageImages(ctx, j.id, tok, spec.Chat.Messages)
+		if err != nil {
+			return spec, fmt.Errorf("%s: %v", workerproto.CodeInternal, err)
+		}
+		spec.Chat.Messages = msgs
+	}
 	if spec.VerifySubmitted() {
 		if err := j.cutBaselines(&spec); err != nil {
 			return spec, err
@@ -247,6 +281,31 @@ func (j *job) setup(ctx context.Context, in exec.JobSpec) (exec.JobSpec, error) 
 		}
 	}
 	return spec, nil
+}
+
+// chatWorktrees is the fix run's bindings for each repo the chat spec
+// names, each of which must still be on disk (§21: else bad_spec,
+// worktrees discarded).
+func chatWorktrees(prior, chat exec.JobSpec) ([]git.WorktreeBinding, error) {
+	byRepo := map[string]git.WorktreeBinding{}
+	for _, b := range prior.Worktrees {
+		byRepo[b.Repo] = b
+	}
+	out := make([]git.WorktreeBinding, 0, len(chat.Worktrees))
+	for _, in := range chat.Worktrees {
+		b, ok := byRepo[in.Repo]
+		if !ok || b.WorktreeAbs == "" {
+			return nil, fmt.Errorf("%s: worktrees discarded: %s", workerproto.DeclineBadSpec, in.Repo)
+		}
+		if st, err := os.Stat(b.WorktreeAbs); err != nil || !st.IsDir() {
+			return nil, fmt.Errorf("%s: worktrees discarded: %s", workerproto.DeclineBadSpec, in.Repo)
+		}
+		out = append(out, b)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s: a chat run names no worktree", workerproto.DeclineBadSpec)
+	}
+	return out, nil
 }
 
 func cloneSpec(in exec.JobSpec) (exec.JobSpec, error) {

@@ -37,7 +37,17 @@ const (
 	Implementer Role = iota
 	// Reviewer is one fresh, read-only review lens. It never resumes.
 	Reviewer
+	// Chat is a follow-up answer on a finished job (docs/contracts
+	// worker-protocol-v1.md §21): it resumes the implementer's session
+	// (ResumeID) with read-only tools and no shell, so it can explain the
+	// fix but never change it. Only adapters whose ChatsReadOnly reports
+	// true accept it; the others refuse the Task.
+	Chat
 )
+
+// ErrChatUnsupported is a Chat task on an adapter that cannot run one
+// read-only.
+var ErrChatUnsupported = errors.New("agent_runner_unsupported: this coding agent cannot answer follow-up messages read-only")
 
 // CredentialMode is how the adapter's CLI authenticates.
 type CredentialMode string

@@ -85,11 +85,18 @@ type settings struct {
 	} `json:"sandbox"`
 }
 
+// ChatDisallowedTools are the tools a Chat task may not use: everything that
+// writes or runs a command. Read, Grep and Glob stay, scoped by Settings.
+const ChatDisallowedTools = "Bash,Edit,Write,NotebookEdit,Task,MultiEdit"
+
 // SettingsPath is where Prepare writes the task's settings file.
 func SettingsPath(t aa.Task) string {
 	name := "claude-settings.json"
-	if t.Role == aa.Reviewer {
+	switch t.Role {
+	case aa.Reviewer:
 		name = "claude-review-settings.json"
+	case aa.Chat:
+		name = "claude-chat-settings.json"
 	}
 	return filepath.Join(t.StateDir, name)
 }
@@ -147,6 +154,11 @@ func Settings(t aa.Task) ([]byte, error) {
 	}
 	var s settings
 	s.Permissions.Allow = []string{"Bash"}
+	if t.Role == aa.Chat {
+		// No shell for a follow-up answer: reads only.
+		s.Permissions.Allow = []string{}
+		s.Permissions.Deny = append(s.Permissions.Deny, "Bash")
+	}
 	for _, p := range dirs {
 		s.Permissions.Allow = append(s.Permissions.Allow, "Read("+abs(p)+"/**)")
 	}
@@ -159,7 +171,7 @@ func Settings(t aa.Task) ([]byte, error) {
 			s.Permissions.Allow = append(s.Permissions.Allow, "Edit("+abs(p)+"/**)")
 		}
 	}
-	s.Permissions.Deny = []string{"WebFetch", "WebSearch"}
+	s.Permissions.Deny = append(s.Permissions.Deny, "WebFetch", "WebSearch")
 	for _, p := range dirs {
 		s.Permissions.Deny = append(s.Permissions.Deny, "Edit("+abs(filepath.Join(p, ".claude"))+"/**)")
 	}
@@ -278,6 +290,14 @@ func (a *Adapter) Command(t aa.Task) (aa.Command, error) {
 	}
 	if t.Role == aa.Reviewer {
 		args = append(args, "--disallowedTools", "Edit,Write,NotebookEdit,Task")
+	} else if t.Role == aa.Chat {
+		// A follow-up answer resumes the implementer's own session with no
+		// way to change anything: no shell, no edits, no subagents. Its
+		// settings file has no Edit allow either (Settings).
+		if !SessionID(t.ResumeID) {
+			return aa.Command{}, fmt.Errorf("claude: invalid session id %q", t.ResumeID)
+		}
+		args = append(args, "--disallowedTools", ChatDisallowedTools, "--resume", t.ResumeID)
 	} else if t.ResumeID != "" {
 		if !SessionID(t.ResumeID) {
 			return aa.Command{}, fmt.Errorf("claude: invalid session id %q", t.ResumeID)

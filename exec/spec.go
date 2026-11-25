@@ -31,6 +31,10 @@ const (
 	// protocol v1 §16): baseline, verify, diff hygiene, review and harvest,
 	// with no coding agent and no branch of DD's own. Batch fix only.
 	ModeVerifySubmitted = "verify_submitted"
+	// ModeChat answers people's messages on a finished batch fix (§21): it
+	// resumes the implementer's session read-only and runs no baseline,
+	// verify, review or harvest. Chat carries the messages.
+	ModeChat = "chat"
 )
 
 // SubmittedRef is one repo's submitted code: a branch name or a commit id.
@@ -99,7 +103,25 @@ type JobSpec struct {
 	// baseline runs, since Worktrees hold the submitted code.
 	SubmittedRefs     []SubmittedRef        `json:"submittedRefs,omitempty"`
 	BaselineWorktrees []git.WorktreeBinding `json:"baselineWorktrees,omitempty"`
+
+	// Messaging turns job messages on (§21, job_messages.v1); nil keeps a
+	// run as before. Chat is a ModeChat run's input.
+	Messaging *MessagingSpec `json:"messaging,omitempty"`
+	Chat      *ChatSpec      `json:"chat,omitempty"`
 }
+
+// ChatSpec is one chat run: the messages to answer and its caps.
+type ChatSpec struct {
+	Messages []InboxMessage `json:"messages"`
+	// MaxTurns and MaxWallSec bound the run (0: 20 turns, 600 s).
+	// MaxCostUSD is reported against, since the CLI cannot stop on it.
+	MaxTurns   int     `json:"maxTurns,omitempty"`
+	MaxWallSec int     `json:"maxWallSec,omitempty"`
+	MaxCostUSD float64 `json:"maxCostUsd,omitempty"`
+}
+
+// IsChat reports whether s is a chat run.
+func (s JobSpec) IsChat() bool { return s.Mode == ModeChat }
 
 // VerifySubmitted reports whether s verifies a submitted ref.
 func (s JobSpec) VerifySubmitted() bool { return s.Mode == ModeVerifySubmitted }
@@ -212,6 +234,11 @@ const (
 	EventHarvest      = "harvest"
 	EventTestResults  = "test_results"
 	EventDone         = "done"
+	// Job messages (§21).
+	EventMessage   = "message"
+	EventDelivered = "delivered"
+	EventWaiting   = "waiting"
+	EventChat      = "chat"
 )
 
 // Status phases, in the order a run reaches them. Each is a point where the
@@ -259,6 +286,10 @@ type Event struct {
 	Harvest      *FixHarvest        `json:"harvest,omitempty"`
 	TestResults  *TestHarvest       `json:"testResults,omitempty"`
 	Done         *Done              `json:"done,omitempty"`
+	Message      *AgentMessage      `json:"message,omitempty"`
+	Delivered    *Delivered         `json:"delivered,omitempty"`
+	Waiting      *Waiting           `json:"waiting,omitempty"`
+	ChatRun      *ChatRun           `json:"chatRun,omitempty"`
 }
 
 // LogLine is one job-log line. Guarded lines (and every payload) are
@@ -361,6 +392,10 @@ const (
 	ControlDiff        = "diff"
 	ControlShip        = "ship"
 	ControlDiscard     = "discard"
+	// ControlMessage hands people's messages to a running job; Interrupt
+	// also stops the agent mid-step to take them (§21).
+	ControlMessage   = "message"
+	ControlInterrupt = "interrupt"
 )
 
 // ShipRepo is one repo of a ship control: the files the operator confirmed
@@ -395,6 +430,8 @@ type Control struct {
 	SpecURL   string     `json:"specUrl,omitempty"`
 	Repo      string     `json:"repo,omitempty"`
 	Repos     []ShipRepo `json:"repos,omitempty"`
+	// Messages are a message control's messages (§21).
+	Messages []InboxMessage `json:"messages,omitempty"`
 }
 
 // Answers a Sink may give. ErrInactive: the job was cancelled or deleted,

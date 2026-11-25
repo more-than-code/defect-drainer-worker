@@ -274,6 +274,19 @@ func (f Control) Validate() error {
 			}
 		}
 	}
+	if len(f.Control.Messages) > MaxControlMessages {
+		return errors.New("too many control.messages")
+	}
+	for _, m := range f.Control.Messages {
+		if checkID("control.messages[].id", m.ID) != nil {
+			return errors.New("invalid control.messages[].id")
+		}
+		for _, img := range m.Images {
+			if img.Data != nil || (img.SHA256 != "" && !ValidSHA256(img.SHA256)) {
+				return errors.New("invalid control.messages[].images entry: a blob sha256 or a url, never inline data")
+			}
+		}
+	}
 	return nil
 }
 

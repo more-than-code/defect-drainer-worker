@@ -300,6 +300,15 @@ func validateSpec(s exec.JobSpec) error {
 	}
 	switch s.Mode {
 	case exec.ModeFresh, exec.ModeRerun, exec.ModeResume, exec.ModeVerifySubmitted:
+	case exec.ModeChat:
+		if s.Kind != exec.KindBatchFix || s.Chat == nil || len(s.Chat.Messages) == 0 || len(s.Chat.Messages) > workerproto.MaxControlMessages {
+			return errors.New("a chat run is a batch fix with 1 to 10 messages")
+		}
+		for _, m := range s.Chat.Messages {
+			if !workerproto.ValidID(m.ID) {
+				return errors.New("invalid chat message id")
+			}
+		}
 	default:
 		return fmt.Errorf("unknown mode %q", s.Mode)
 	}

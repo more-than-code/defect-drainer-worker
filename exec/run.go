@@ -99,6 +99,11 @@ func (r *run) emit(e Event) error {
 		d.Line = redact(d.Line)
 		e.Done = &d
 	}
+	if e.Message != nil {
+		m := *e.Message
+		m.Text = redact(m.Text)
+		e.Message = &m
+	}
 	if e.AgentRun != nil && e.AgentRun.StopReason != "" {
 		ar := *e.AgentRun
 		ar.StopReason = redact(ar.StopReason)
@@ -338,9 +343,17 @@ func (r *run) complete(cutoff time.Time) (bool, []string) {
 
 func (r *run) start() (Outcome, error) {
 	s := r.spec
+	if s.IsChat() {
+		return r.startChat()
+	}
 	handoff, wts, label := s.Handoff, s.Worktrees, s.Label
 	if err := r.writeHandoff(); err != nil {
 		return Outcome{}, err
+	}
+	if s.Messaging != nil {
+		if err := os.WriteFile(filepath.Join(handoff, "MESSAGES.md"), []byte(MessagesMarkdown(s.Messaging.Interactive())), 0o644); err != nil {
+			return Outcome{}, err
+		}
 	}
 	if err := r.status(PhaseHandoff); err != nil {
 		return stopOn(err)
@@ -474,7 +487,7 @@ func (r *run) start() (Outcome, error) {
 	// agy has no turn cap; its per-invocation limit is --print-timeout, set to
 	// the loop's wall budget.
 	agentTimeout := time.Duration(s.Caps.AgentMaxWallSec) * time.Second
-	startIter := func(resume bool, session string) (*exec.Cmd, func(), error) {
+	startIter := func(resume bool, session, prompt string) (*exec.Cmd, func(), error) {
 		// The previous iteration ran with this handoff as its writable cwd,
 		// and grok re-reads the profile on every start.
 		if sandboxProfile != "" {
@@ -544,6 +557,12 @@ func (r *run) start() (Outcome, error) {
 			opts.VerifyCommands = nil
 			opts.AlreadyFailing = nil
 		}
+		if s.Messaging != nil {
+			opts.PromptSuffix = MessagesPromptSuffix
+			if prompt != "" {
+				opts.ContinuePrompt = prompt
+			}
+		}
 		if r.secret != "" {
 			opts.Secret = r.secret
 			opts.ExtraEnv["DD_TEST_ACCOUNT_PASSWORD"] = r.secret
@@ -585,7 +604,21 @@ func (r *run) start() (Outcome, error) {
 	// NOTES.md as it stands before the agent's first turn: a BLOCKED: line
 	// counts only once the content changes (BlockedReason).
 	notesAtStart := NotesDigest(handoff, r.harvestCutoff())
-	cmd, flush, err := startIter(false, s.ResumeSession)
+	messenger, _ := r.sink.(Messenger)
+	if s.Messaging == nil {
+		messenger = nil
+	}
+	outbox := &Outbox{Handoff: handoff}
+	for _, w := range wts {
+		outbox.Worktrees = append(outbox.Worktrees, w.WorktreeAbs)
+	}
+	// A Resume or Re-run never sends an earlier run's messages again.
+	outbox.Skip()
+	asked := 0
+	if s.Messaging != nil {
+		asked = s.Messaging.AskedSoFar
+	}
+	cmd, flush, err := startIter(false, s.ResumeSession, "")
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -628,6 +661,9 @@ func (r *run) start() (Outcome, error) {
 		var exitErr error
 		cutoff := r.harvestCutoff()
 		maxCost := s.Caps.AgentMaxCostUSD
+		// waited is time spent waiting for an answer; it is not agent time.
+		var waited time.Duration
+		nextPrompt := ""
 		for {
 			exitErr = curProc.Reap()
 			if curFlush != nil {
@@ -645,6 +681,11 @@ func (r *run) start() (Outcome, error) {
 			if r.sink.Cancelled() {
 				return
 			}
+			interrupted := messenger != nil && messenger.TakeInterrupt()
+			askedNow := false
+			if s.Messaging != nil {
+				askedNow = r.sendOutbox(outbox)
+			}
 
 			complete, miss := r.complete(cutoff)
 			missing = miss
@@ -654,13 +695,37 @@ func (r *run) start() (Outcome, error) {
 			prevFP, prevMissing = fp, missing
 			stoppedBy = NextLoopStop(LoopState{
 				Iter: iter, MaxIters: maxIters,
-				Elapsed: time.Since(loopStart), MaxWall: maxWall,
-				ExitErr: exitErr, SawMaxTurns: sawMaxTurns, Complete: complete,
+				Elapsed: time.Since(loopStart) - waited, MaxWall: maxWall,
+				ExitErr: exitErr, SawMaxTurns: sawMaxTurns, Interrupted: interrupted, Complete: complete,
 				Blocked: blocked, NoProgress: noProgress,
 				CostUSD: acc.CostUSD(), MaxCostUSD: maxCost,
 			})
 			if stoppedBy == StoppedByBlocked {
 				stopReason = reason
+			}
+			// Messages (§21). A stop the agent chose (done, blocked, no
+			// progress) gives way to messages waiting for it, and in an
+			// interactive job to the answer of its question. A cap or a
+			// failure does not: the job ends and its messages wait for a
+			// chat run.
+			var inbox []InboxMessage
+			wait := false
+			nextPrompt = ""
+			if messenger != nil && agentStop(stoppedBy) {
+				inbox = messenger.TakeMessages()
+				if askedNow {
+					asked++
+				}
+				capped := s.Messaging.MaxQuestions > 0 && asked > s.Messaging.MaxQuestions
+				if len(inbox) == 0 && askedNow && s.Messaging.Interactive() && !capped {
+					wait = true
+				}
+				if askedNow && capped {
+					r.log(fmt.Sprintf("the agent asked more than the job's %d question(s): not waiting", s.Messaging.MaxQuestions), "warn", "DefectDrainer")
+				}
+				if len(inbox) > 0 || wait {
+					stoppedBy, stopReason = "", ""
+				}
 			}
 
 			// Recorded after every iteration so a killed loop still leaves its
@@ -678,6 +743,35 @@ func (r *run) start() (Outcome, error) {
 			if stoppedBy != "" {
 				break
 			}
+			if wait {
+				timeout := s.Messaging.AskTimeout()
+				_ = r.emit(Event{Kind: EventWaiting, Waiting: &Waiting{Until: time.Now().Add(timeout).UTC().Format(time.RFC3339)},
+					Lines: []LogLine{guarded("the agent asked a question: waiting up to "+timeout.String()+" for an answer", "info")}})
+				t0 := time.Now()
+				messenger.WaitMessages(timeout)
+				waited += time.Since(t0)
+				if r.sink.Cancelled() {
+					return
+				}
+				inbox = messenger.TakeMessages()
+				if len(inbox) > 0 {
+					_ = r.emit(Event{Kind: EventWaiting, Waiting: &Waiting{Answered: true}})
+				} else {
+					_ = r.emit(Event{Kind: EventWaiting, Waiting: &Waiting{TimedOut: true}, Lines: []LogLine{guarded("no answer came: the agent goes on", "info")}})
+					_ = r.emit(Event{Kind: EventDelivered, Delivered: &Delivered{TimedOut: true}})
+					nextPrompt = NoAnswerPrompt
+				}
+			}
+			if len(inbox) > 0 {
+				ids, werr := WriteInbox(handoff, inbox, "")
+				if werr != nil {
+					r.log("inbox: "+werr.Error(), "error", "DefectDrainer")
+				} else {
+					_ = r.emit(Event{Kind: EventDelivered, Delivered: &Delivered{IDs: ids, Interrupted: interrupted},
+						Lines: []LogLine{guarded(fmt.Sprintf("delivered %d message(s) to the agent", len(ids)), "info")}})
+					nextPrompt = InboxPrompt(interrupted, wait)
+				}
+			}
 
 			iter++
 			if r.hooks.BeforeNext != nil {
@@ -686,7 +780,7 @@ func (r *run) start() (Outcome, error) {
 			if r.sink.Cancelled() {
 				return
 			}
-			nextCmd, nextFlush, nerr := startIter(true, "")
+			nextCmd, nextFlush, nerr := startIter(true, "", nextPrompt)
 			if nerr != nil {
 				exitErr = nerr
 				stoppedBy = StoppedByExit
