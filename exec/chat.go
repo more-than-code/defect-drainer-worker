@@ -114,6 +114,7 @@ func (r *run) startChat() (Outcome, error) {
 		DenyRead:   r.host.DenyRead(),
 		ReadOnly:   r.host.ReadOnly,
 		DenyWrite:  r.host.DenyWrite,
+		CgroupFD:   r.host.CgroupFD,
 		Cwd:        s.Handoff,
 		Prompt:     ChatPrompt,
 		MaxTurns:   maxTurns,

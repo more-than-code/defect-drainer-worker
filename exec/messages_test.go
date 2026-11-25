@@ -86,3 +86,33 @@ func TestMessagesMarkdownModes(t *testing.T) {
 		t.Fatal("autonomous text")
 	}
 }
+
+// An OUTBOX.jsonl swapped for a symlink, or a hard link, to a file outside
+// the handoff is read as nothing: the open does not follow it.
+func TestOutboxRefusesLinks(t *testing.T) {
+	h := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.jsonl")
+	os.WriteFile(secret, []byte(`{"text":"host secret"}`+"\n"), 0o600)
+	path := filepath.Join(h, "OUTBOX.jsonl")
+	o := &Outbox{Handoff: h}
+	o.Skip()
+	if err := os.Symlink(secret, path); err != nil {
+		t.Fatal(err)
+	}
+	if msgs, _ := o.Read(); len(msgs) != 0 {
+		t.Fatalf("read through a symlink: %+v", msgs)
+	}
+	os.Remove(path)
+	if err := os.Link(secret, path); err != nil {
+		t.Skip("no hard links here:", err)
+	}
+	if msgs, _ := o.Read(); len(msgs) != 0 {
+		t.Fatalf("read through a hard link: %+v", msgs)
+	}
+	os.Remove(path)
+	os.WriteFile(path, []byte(`{"text":"mine"}`+"\n"), 0o644)
+	if msgs, _ := o.Read(); len(msgs) != 1 || msgs[0].Text != "mine" {
+		t.Fatalf("a plain outbox: %+v", msgs)
+	}
+}

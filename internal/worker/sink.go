@@ -68,7 +68,7 @@ func (j *job) prepare(ctx context.Context, e exec.Event) exec.Event {
 		}
 		m.Images = nil
 		for _, f := range j.blobImages(ctx, files, &notes) {
-			m.Images = append(m.Images, exec.MessageImage{Filename: f.Filename, SHA256: f.SHA256, Size: f.Size})
+			m.Images = append(m.Images, exec.MessageImage{Filename: f.Filename, MIME: exec.ImageMIME(f.Filename), SHA256: f.SHA256, Size: f.Size})
 		}
 		e.Message = &m
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -173,7 +174,8 @@ People can follow this job and write to you while you work.
 
   ` + "`text`" + ` is required (at most 8000 characters). ` + "`images`" + ` are paths inside
   this directory or a worktree (PNG, JPEG, WebP or GIF, at most 1 MiB, at
-  most 4). Links must be https. Write a message when you find something
+  most 4). Links must be http or https; Defect Drainer may drop any that its
+  link policy (https only by default) refuses. Write a message when you find something
   worth showing, when you change your plan, and when you finish.
 `)
 	if interactive {
@@ -234,13 +236,13 @@ func WriteInbox(handoff string, msgs []InboxMessage, note string) ([]string, err
 	var ids []string
 	for _, m := range msgs {
 		ids = append(ids, m.ID)
-		who := m.Author
+		who := oneLine(m.Author)
 		if who == "" {
 			who = "a person on this job"
 		}
-		fmt.Fprintf(&b, "## Message %s from %s", m.ID, who)
-		if m.At != "" {
-			fmt.Fprintf(&b, " at %s", m.At)
+		fmt.Fprintf(&b, "## Message %s from %s", oneLine(m.ID), who)
+		if at := oneLine(m.At); at != "" {
+			fmt.Fprintf(&b, " at %s", at)
 		}
 		b.WriteString("\n\n")
 		// Quoted so a message cannot pose as DD's own headings.
@@ -249,9 +251,9 @@ func WriteInbox(handoff string, msgs []InboxMessage, note string) ([]string, err
 		}
 		for _, l := range m.Links {
 			if l.Title != "" {
-				fmt.Fprintf(&b, "\n- link: %s (%s)", l.URL, oneLine(l.Title))
+				fmt.Fprintf(&b, "\n- link: %s (%s)", oneLine(l.URL), oneLine(l.Title))
 			} else {
-				fmt.Fprintf(&b, "\n- link: %s", l.URL)
+				fmt.Fprintf(&b, "\n- link: %s", oneLine(l.URL))
 			}
 		}
 		for i, img := range m.Images {
@@ -263,7 +265,7 @@ func WriteInbox(handoff string, msgs []InboxMessage, note string) ([]string, err
 				}
 				fmt.Fprintf(&b, "\n- image: inbox/%s", name)
 			case img.URL != "":
-				fmt.Fprintf(&b, "\n- image link (not downloaded): %s", img.URL)
+				fmt.Fprintf(&b, "\n- image link (not downloaded): %s", oneLine(img.URL))
 			}
 		}
 		b.WriteString("\n\n")
@@ -329,9 +331,12 @@ func (o *Outbox) Skip() {
 // not a valid message is reported in bad. A symlink, or a file past
 // MaxOutboxBytes, is read as nothing.
 func (o *Outbox) Read() (msgs []AgentMessage, bad []string) {
-	path := filepath.Join(o.Handoff, "OUTBOX.jsonl")
-	st, err := os.Lstat(path)
-	if err != nil || !st.Mode().IsRegular() || st.Size() <= o.offset {
+	f, st, ok := openOutbox(o.Handoff)
+	if !ok {
+		return nil, nil
+	}
+	defer f.Close()
+	if st.Size() <= o.offset {
 		return nil, nil
 	}
 	if st.Size() > MaxOutboxBytes {
@@ -341,15 +346,12 @@ func (o *Outbox) Read() (msgs []AgentMessage, bad []string) {
 		}
 		return nil, nil
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, nil
-	}
-	defer f.Close()
 	if _, err := f.Seek(o.offset, io.SeekStart); err != nil {
 		return nil, nil
 	}
-	r := bufio.NewReader(f)
+	// Read no further than the size checked above: the agent may still be
+	// appending.
+	r := bufio.NewReader(io.LimitReader(f, st.Size()-o.offset))
 	for {
 		line, err := r.ReadBytes('\n')
 		if err != nil {
@@ -374,6 +376,38 @@ func (o *Outbox) Read() (msgs []AgentMessage, bad []string) {
 		msgs = append(msgs, o.message(ol))
 	}
 	return msgs, bad
+}
+
+// openOutbox opens the handoff's OUTBOX.jsonl without following a
+// symlink, and checks the open file: a regular file with one link, on the
+// handoff's device. The agent owns the handoff, so a check by path alone
+// could be raced by a swap to a link to a file only the worker may read.
+func openOutbox(handoff string) (*os.File, os.FileInfo, bool) {
+	f, err := os.OpenFile(filepath.Join(handoff, "OUTBOX.jsonl"), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, false
+	}
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() {
+		f.Close()
+		return nil, nil, false
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok || sys.Nlink != 1 {
+		f.Close()
+		return nil, nil, false
+	}
+	dir, err := os.Stat(handoff)
+	if err != nil {
+		f.Close()
+		return nil, nil, false
+	}
+	dsys, ok := dir.Sys().(*syscall.Stat_t)
+	if !ok || dsys.Dev != sys.Dev {
+		f.Close()
+		return nil, nil, false
+	}
+	return f, st, true
 }
 
 func (o *Outbox) message(ol outboxLine) AgentMessage {
@@ -439,7 +473,22 @@ func readOutboxImage(roots []string, p string) (MessageImage, string) {
 	if len(data) > MaxMessageImage {
 		return MessageImage{}, "larger than 1 MiB"
 	}
-	return MessageImage{Filename: filepath.Base(abs), Data: data, Size: int64(len(data))}, ""
+	return MessageImage{Filename: filepath.Base(abs), MIME: ImageMIME(abs), Data: data, Size: int64(len(data))}, ""
+}
+
+// ImageMIME is an image file's type from its extension, "" when unknown.
+func ImageMIME(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".webp":
+		return "image/webp"
+	case ".gif":
+		return "image/gif"
+	}
+	return ""
 }
 
 func clipRunes(s string, n int) string {

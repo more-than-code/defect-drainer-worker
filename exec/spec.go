@@ -120,7 +120,7 @@ type ChatSpec struct {
 	MaxCostUSD float64 `json:"maxCostUsd,omitempty"`
 }
 
-// Chat reports whether s is a chat run.
+// IsChat reports whether s is a chat run.
 func (s JobSpec) IsChat() bool { return s.Mode == ModeChat }
 
 // VerifySubmitted reports whether s verifies a submitted ref.

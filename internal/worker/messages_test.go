@@ -1,13 +1,16 @@
 package worker
 
 import (
+	"encoding/json"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	dexec "github.com/more-than-code/defect-drainer-worker/exec"
+	"github.com/more-than-code/defect-drainer-worker/internal/cgroup"
 	"github.com/more-than-code/defect-drainer-worker/workerproto"
 )
 
@@ -155,14 +158,63 @@ func TestAutonomousJobDoesNotWait(t *testing.T) {
 }
 
 // §21: a chat run on a finished job resumes the session with no shell and
-// no edits, answers, and reports a worktree it changed.
+// no edits, answers, and reports a worktree it changed. It reads the fix's
+// own worktrees: the base branch moving meanwhile changes neither the
+// job's diff nor its stored spec.
 func TestChatRunAnswersReadOnly(t *testing.T) {
+	h, id, session, fj, spec := chatJob(t, harnessOpts{}, "")
+	diffBefore := chatDiff(t, h, id, "rq_diff_before")
+	moveBase(t, h)
+	cr, answer := runChat(t, h, id, session, fj, spec)
+	if cr.Error != "" || answer == nil || answer.Text == "" || len(answer.ReplyTo) != 1 || answer.ReplyTo[0] != "jmsg_c1" {
+		t.Fatalf("chat run %+v answer %+v\n%s", cr, answer, joinLines(h.fs.jobEvents(id)))
+	}
+	if cr.Changed {
+		t.Fatal("a read-only chat run reported changed worktrees")
+	}
+	argv, _ := os.ReadFile(h.argv)
+	if !strings.Contains(string(argv), "--resume "+session) {
+		t.Fatalf("chat run did not resume the session:\n%s", argv)
+	}
+	if after := chatDiff(t, h, id, "rq_diff_after"); after != diffBefore {
+		t.Fatalf("the diff changed across a chat run:\nbefore %q\nafter  %q", diffBefore, after)
+	}
+	meta, err := readMeta(h.w.opts.Paths.JobMeta(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Spec.IsChat() || meta.Spec.Chat != nil {
+		t.Fatalf("job.json holds the chat spec: mode %q", meta.Spec.Mode)
+	}
+}
+
+// §21 with per-job limits: the chat agent starts in the run's own cgroup,
+// like the implementer and reviewers.
+func TestChatRunInJobCgroup(t *testing.T) {
+	dir := scratchCgroup(t)
+	seen := filepath.Join(t.TempDir(), "chat-cgroup.txt")
+	h, id, session, fj, spec := chatJob(t, harnessOpts{cgroups: func() (*cgroup.Manager, error) { return cgroup.OpenDir(dir) }},
+		"cat /proc/self/cgroup > '"+seen+"'; ")
+	cr, _ := runChat(t, h, id, session, fj, spec)
+	if cr.Error != "" {
+		t.Fatalf("chat run %+v", cr)
+	}
+	got, err := os.ReadFile(seen)
+	if err != nil || !strings.Contains(string(got), "/job-"+id+"-2-") {
+		t.Fatalf("chat agent's cgroup: %q %v", got, err)
+	}
+}
+
+// chatJob runs a batch fix to completion with an agent that, when started
+// as a chat (no shell, no edits), runs chatPre and answers.
+func chatJob(t *testing.T, opts harnessOpts, chatPre string) (*harness, string, string, *fakeJob, dexec.JobSpec) {
+	t.Helper()
 	fixture := claudeFixture(t, "c1-basic")
-	agent := "case \"$*\" in *'--disallowedTools Bash,Edit'*)\n" +
+	opts.agent = "case \"$*\" in *'--disallowedTools Bash,Edit'*)\n" +
 		"  grep -q 'why the rounding' INBOX.md || exit 5\n" +
-		"  cat '" + fixture + "'; exit 0;;\nesac\n" +
-		fixArtifacts(testDefect) + "cat '" + fixture + "'\nexit 0\n"
-	h := newHarness(t, harnessOpts{agent: agent})
+		"  " + chatPre + "cat '" + fixture + "'; exit 0;;\nesac\n" +
+		fixArtifacts(testDefect) + "echo fixed >> ../worktrees/app/README.md\ncat '" + fixture + "'\nexit 0\n"
+	h := newHarness(t, opts)
 	id := "bjob_chat1"
 	spec := fixSpec(id)
 	fj := h.offerJob(spec, nil)
@@ -176,6 +228,11 @@ func TestChatRunAnswersReadOnly(t *testing.T) {
 	if session == "" {
 		t.Fatal("no session id recorded")
 	}
+	return h, id, session, fj, spec
+}
+
+func runChat(t *testing.T, h *harness, id, session string, fj *fakeJob, spec dexec.JobSpec) (*dexec.ChatRun, *dexec.AgentMessage) {
+	t.Helper()
 	chat := spec
 	chat.Mode = dexec.ModeChat
 	chat.PriorAgentRun = &dexec.AgentRun{SessionID: session}
@@ -206,15 +263,29 @@ func TestChatRunAnswersReadOnly(t *testing.T) {
 	if cr == nil {
 		t.Fatalf("no chat run:\n%s", joinLines(h.fs.jobEvents(id)[before:]))
 	}
-	if cr.Error != "" || answer == nil || answer.Text == "" || len(answer.ReplyTo) != 1 || answer.ReplyTo[0] != "jmsg_c1" {
-		t.Fatalf("chat run %+v answer %+v\n%s", cr, answer, joinLines(h.fs.jobEvents(id)))
+	return cr, answer
+}
+
+func chatDiff(t *testing.T, h *harness, id, req string) string {
+	t.Helper()
+	r := h.controlAndWait(id, req, dexec.Control{Kind: dexec.ControlDiff, Repo: "app"}, 1)
+	var d workerproto.DiffResult
+	if !r.OK || json.Unmarshal(r.Result, &d) != nil || !strings.Contains(d.Diff, "fixed") {
+		t.Fatalf("diff %+v %s", r, r.Result)
 	}
-	if cr.Changed {
-		t.Fatal("a read-only chat run reported changed worktrees")
-	}
-	argv, _ := os.ReadFile(h.argv)
-	if !strings.Contains(string(argv), "--resume "+session) {
-		t.Fatalf("chat run did not resume the session:\n%s", argv)
+	return d.Diff
+}
+
+// moveBase pushes a new commit to the origin's main.
+func moveBase(t *testing.T, h *harness) {
+	t.Helper()
+	src := filepath.Join(h.tmp, "src")
+	for _, args := range [][]string{{"commit", "-q", "--allow-empty", "-m", "base moved"}, {"push", "-q", filepath.Join(h.tmp, "origin", "app.git"), "main"}} {
+		cmd := osexec.Command("git", args...)
+		cmd.Dir = src
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
 	}
 }
 
