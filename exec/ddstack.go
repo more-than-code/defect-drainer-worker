@@ -5,8 +5,6 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -69,7 +67,7 @@ func WriteDDStack(handoff string, c DDStack) error {
 		return err
 	}
 	body := strings.Replace(ddStackScript, line, cfg, 1)
-	return os.WriteFile(filepath.Join(handoff, DDStackName), []byte(body), 0o755)
+	return WriteHandoffFile(handoff, DDStackName, []byte(body), 0o755)
 }
 
 // stackConfig is dd-stack's definition: dd_config, then svc_<n>, steps_<n>

@@ -3,8 +3,6 @@ package exec
 import (
 	_ "embed"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -71,7 +69,7 @@ func WriteDDShot(handoff string, c DDShot) error {
 		}
 		body = strings.Replace(body, line, kv[0]+"="+shQuote(kv[1])+"\n", 1)
 	}
-	return os.WriteFile(filepath.Join(handoff, DDShotName), []byte(body), 0o755)
+	return WriteHandoffFile(handoff, DDShotName, []byte(body), 0o755)
 }
 
 // markedLines keeps the lines ending in marker when keep, and drops them

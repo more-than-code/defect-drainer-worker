@@ -409,7 +409,7 @@ func tryWriteVerifyJSON(handoffAbs string, run VerificationRun) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(filepath.Join(handoffAbs, "verify.json"), append(b, '\n'), 0o644)
+	_ = WriteHandoffFile(handoffAbs, "verify.json", append(b, '\n'), 0o644)
 }
 
 func pathExists(p string) bool {
