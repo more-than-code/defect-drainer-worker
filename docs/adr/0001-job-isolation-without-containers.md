@@ -3,8 +3,10 @@
 - **Status:** Accepted (records the existing design; written 2026-11-23)
 - **Defect:** DEF-20261123-document-why-worker-jobs-are-sandboxed-w-o22o
 - **Status note (2026-11-25):** the two gaps in §6 (no per-job cgroup limits,
-  no seccomp filter in the verify sandbox) are being closed in PR #16. Until it
-  merges, §2, §5 and §6 describe the design as it stands on `main`.
+  no seccomp filter in the verify sandbox) were closed in PR #16. The §5 table
+  still shows the design as it was before that PR, for the comparison. §6
+  lists what the design does not give (corrected after the 2026-11-23
+  security review, DEF-…-2svt).
 - **Scope:** how `dd-worker` keeps one coding-agent job away from the host,
   the worker's own state and other jobs
 
@@ -39,11 +41,11 @@ No containers. Six layers, each in code:
 
 | Layer | What it does | Where |
 |---|---|---|
-| Dedicated user and hardened unit | Runs as the `dd-worker` system user with an empty home. `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp`, an empty capability bounding set, `RestrictSUIDSGID`. The API key arrives through `LoadCredential`, never the environment. | `packaging/dd-worker.service` |
+| Dedicated user and hardened unit | Runs as the `dd-worker` system user with an empty home. `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp`, an empty capability bounding set, `RestrictSUIDSGID`. The API key reaches the worker through `LoadCredential`, never the unit's environment; the worker then hands it to the agent CLI in that child's environment, because the CLI reads it from there. | `packaging/dd-worker.service` |
 | Per-job directories | Each job gets its own handoff and git worktrees. The repo clone is readable but not writable by the agent; the worker commits only on ship. | `exec/`, `git/pinned.go` |
 | The agent CLI's own sandbox, `strict` | A per-job `--settings` file turns Claude Code's sandbox on with `failIfUnavailable: true` and `allowUnsandboxedCommands: false`. On Linux that sandbox is bubblewrap; on macOS it is Seatbelt. Reads and edits are scoped to the job's dirs, web fetch and search are denied. | `agentadapter/claude/claude.go` (`Settings`) |
-| Hidden secrets | Every path in `Host.DenyRead()` is denied to the shell and the file tools: `~/.ssh`, `~/.config`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.netrc`, the agent CLIs' config dirs, DD's database, clones, agent state and other jobs. | `exec/host.go` |
-| Egress allowlist | The agent's shell has no network unless policy `agent_allowed_domains` lists exact hosts (narrowed further by the project). | `agentadapter/claude/claude.go` (`withNetwork`), `internal/worker/offer.go` |
+| Hidden secrets | With the Claude adapter (the only one a worker runs; it declines the others), every path in `Host.DenyRead()` is denied to the shell and the file tools: `~/.ssh`, `~/.config`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.netrc`, the agent CLIs' config dirs, DD's database, clones, agent state and other jobs. | `exec/host.go` |
+| Egress allowlist | With the Claude adapter, the agent's shell has no network unless policy `agent_allowed_domains` lists exact hosts (narrowed further by the project). | `agentadapter/claude/claude.go` (`withNetwork`), `internal/worker/offer.go` |
 | Verify sandbox | Verify commands run in a separate bwrap sandbox built by the worker: `--unshare-all --unshare-net --cap-drop ALL --die-with-parent`, host read-only, secrets and state behind empty tmpfs, only the worktrees writable, `.git` read-only, network only through the worker's egress proxy. A start-up self-test gates the `verify_sandbox.v1` capability. | `internal/sandbox`, `internal/egress`, commit `e5c734c` |
 
 These are the same kernel features containers use (namespaces, read-only and
@@ -71,8 +73,9 @@ is an inference, it says so.
    `/var/run/docker.sock` can mount the host's root. Giving the `dd-worker`
    user that access would undo the unit's `NoNewPrivileges` and empty
    capability set; DD already hides the Docker socket from agents for this
-   reason (`~/.docker` is in `DenyRead`, and the control plane's
-   `docs/verification-hardening.md` handles the `docker.sock` symlink).
+   reason: verify masks `/run` (and with it the socket) behind a tmpfs, and
+   `agent_browser` jobs mask the host sockets for the agent. `~/.docker` in
+   `DenyRead` is only the client's config, not the socket.
 4. **Small hosts.** A Pi 4 or 5 has 4 to 8 GB of RAM and usually an SD card or
    small SSD. A resident daemon and gigabytes of images compete with the
    agent's Node process and Chromium. Section 4 has the numbers.
@@ -133,18 +136,29 @@ slower than native disk for `node_modules`-sized trees.
 | Per-job CPU and memory caps | none per job: limits apply to the whole unit, and the unit sets none | cgroup limits per container | cgroup limits, if v2 delegation is set up | cgroup limits | fixed vCPUs and RAM per VM |
 | Host tools and sign-ins | used directly | baked into images | baked into images | baked into images | baked into guest images |
 | Agent's own sandbox (bwrap) inside | yes, it is the sandbox | needs weakened seccomp/AppArmor | works with care (nested user namespaces) | unverified | yes (own kernel), at the cost of a full guest |
-| Privilege needed by the worker | none (unprivileged user namespaces) | root-equivalent daemon socket | none, but `subuid` and cgroup set-up | a runtime install by root | `/dev/kvm` access |
+| Privilege needed by the worker | none, where the distro allows unprivileged user namespaces (Ubuntu 24.04's AppArmor restricts them by default, so the host needs a profile or the sysctl) | root-equivalent daemon socket | none, but `subuid` and cgroup set-up | a runtime install by root | `/dev/kvm` access |
 | Runs on macOS | yes (Seatbelt; no verify sandbox) | only through a VM | only through a VM (`podman machine`) | no | no |
 | Runs on a Pi 4/5 | yes (shipped) | yes | yes | likely (ARM64 supported); not tested | unverified (needs KVM support from the Pi's kernel and interrupt controller) |
 | Operator upkeep | distro packages | engine, images, registry, pruning | images, pruning, `subuid` | runtime plus images | kernels, rootfs images, networking (tap devices) |
 
 ## 6. Decision
 
-**Keep the OS-sandbox design.** It gives container-class isolation (the same
-kernel features) without a privileged daemon, without images, with the host's
+**Keep the OS-sandbox design.** It uses the same kernel features as a
+container without a privileged daemon, without images, with the host's
 own tools, and at near-zero resource cost on small hosts. Containers would
 add cost and moving parts without a stronger boundary: Docker and Podman still
 share the host kernel, exactly as bwrap does.
+
+What it does **not** give, and a reader should not assume:
+
+- **The agent and the worker share one uid.** The only boundary the worker
+  builds itself is the verify sandbox. The agent's confinement (the deny
+  lists, the egress allowlist, the read-only clones) is the agent CLI's own
+  sandbox, configured by the worker. So the worker runs only adapters that
+  apply those settings (Claude today) and declines the others.
+- **Files the worker writes or runs from the handoff** are the agent's to
+  tamper with. The worker writes there without following links and never
+  executes from it.
 
 Two gaps are real, and both can be closed without containers:
 

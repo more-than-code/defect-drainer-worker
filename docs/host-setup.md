@@ -162,7 +162,10 @@ equals `sha256sum /etc/dd-worker/policy.toml`.
 
 Jobs are isolated with OS sandboxes, not containers; [ADR 0001](adr/0001-job-isolation-without-containers.md) explains why and compares Docker, Podman, gVisor and microVMs.
 
-- **Sandbox:** every agent except grok runs its CLI's own sandbox, `strict`,
+- **Adapters:** the worker runs only Claude. It declines grok and antigravity
+  jobs, because those CLIs do not apply the worker's deny lists and egress
+  allowlist, and the agent runs as the worker's own user.
+- **Sandbox:** the agent runs in its CLI's own sandbox, `strict`,
   whatever the project asks for. The agent writes only its job's handoff and
   worktrees.
 - **Git:** the agent can read its job's repo clone (`git status`, `diff`,

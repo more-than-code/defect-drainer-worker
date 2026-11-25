@@ -530,7 +530,7 @@ func (w *Worker) applyPolicy(spec exec.JobSpec, offerAdapter, offerModel, starte
 		chosen = want
 	} else {
 		for _, a := range pol.Adapters {
-			if ready[a] {
+			if h := adapters[a]; ready[a] && h != nil && h.adapter != nil && agentadapter.Confines(h.adapter) {
 				chosen = a
 				break
 			}
@@ -542,6 +542,12 @@ func (w *Worker) applyPolicy(spec exec.JobSpec, offerAdapter, offerModel, starte
 	h := adapters[chosen]
 	if h == nil || h.adapter == nil {
 		return declineOf(workerproto.DeclineAdapterUnavailable, chosen+" not implemented")
+	}
+	// The agent runs as the worker's own uid, so the deny lists (the
+	// worker credential, other jobs, the job cgroup) and the egress
+	// allowlist hold only where the adapter puts them in its CLI's sandbox.
+	if !agentadapter.Confines(h.adapter) {
+		return declineOf(workerproto.DeclinePolicyDenied, "adapter "+chosen+" does not enforce the worker's deny lists and egress allowlist; this worker runs only adapters that do (claude)")
 	}
 	if !pol.ModelAllowed(chosen, model) {
 		shown := model
