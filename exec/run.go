@@ -318,12 +318,12 @@ func (r *run) browserOn() bool {
 
 func (r *run) prepare() {
 	if r.isTestRun() {
-		_ = os.MkdirAll(filepath.Join(r.spec.Handoff, "results"), 0o755)
-		_ = os.MkdirAll(filepath.Join(r.spec.Handoff, "evidence"), 0o755)
+		_ = EnsureHandoffDir(r.spec.Handoff, "results")
+		_ = EnsureHandoffDir(r.spec.Handoff, "evidence")
 		return
 	}
-	_ = os.MkdirAll(filepath.Join(r.spec.Handoff, "fix-evidence"), 0o755)
-	_ = os.MkdirAll(filepath.Join(r.spec.Handoff, "fix-notes"), 0o755)
+	_ = EnsureHandoffDir(r.spec.Handoff, "fix-evidence")
+	_ = EnsureHandoffDir(r.spec.Handoff, "fix-notes")
 }
 
 // complete is the loop's stop: the artifacts BRIEF.md demands.
@@ -356,7 +356,7 @@ func (r *run) start() (Outcome, error) {
 	// After the handoff check: a job deleted while the brief was written
 	// has no handoff left, and that is a quiet stop, not a failure.
 	if s.Messaging != nil {
-		if err := os.WriteFile(filepath.Join(handoff, "MESSAGES.md"), []byte(MessagesMarkdown(s.Messaging.Interactive())), 0o644); err != nil {
+		if err := WriteHandoffFile(handoff, "MESSAGES.md", []byte(MessagesMarkdown(s.Messaging.Interactive())), 0o644); err != nil {
 			if r.sink.Cancelled() {
 				return Outcome{}, nil
 			}
@@ -1142,15 +1142,16 @@ func (r *run) reviewLens(fin loopFinish, rev *ReviewRun, lens, brief string, ids
 	if r.sink.Cancelled() {
 		return false, true
 	}
-	dir := filepath.Join(fin.handoff, "review", lens)
+	rel := filepath.Join("review", lens)
+	dir := filepath.Join(fin.handoff, rel)
 	row := ReviewLens{Lens: lens, Findings: []ReviewFinding{}}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := EnsureHandoffDir(fin.handoff, rel); err != nil {
 		row.Error = lens + ": " + err.Error()
 		rev.Lenses = append(rev.Lenses, row)
 		return true, false
 	}
 	md := BuildReviewMD(lens, brief, fin.wts, fin.diffBase, ids)
-	if err := os.WriteFile(filepath.Join(dir, "REVIEW.md"), []byte(md), 0o644); err != nil {
+	if err := WriteHandoffFile(fin.handoff, filepath.Join(rel, "REVIEW.md"), []byte(md), 0o644); err != nil {
 		row.Error = lens + ": " + err.Error()
 		rev.Lenses = append(rev.Lenses, row)
 		return true, false

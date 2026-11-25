@@ -224,8 +224,7 @@ const NoAnswerPrompt = "No answer came to your question. Go on with your best ju
 // WriteInbox writes INBOX.md (replacing the last one) and the messages'
 // inline images under inbox/. It returns the ids written.
 func WriteInbox(handoff string, msgs []InboxMessage, note string) ([]string, error) {
-	dir := filepath.Join(handoff, "inbox")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := EnsureHandoffDir(handoff, "inbox"); err != nil {
 		return nil, err
 	}
 	var b strings.Builder
@@ -260,7 +259,7 @@ func WriteInbox(handoff string, msgs []InboxMessage, note string) ([]string, err
 			switch {
 			case len(img.Data) > 0:
 				name := fmt.Sprintf("%s-%d%s", safeName(m.ID), i+1, imageExt(img))
-				if err := os.WriteFile(filepath.Join(dir, name), img.Data, 0o644); err != nil {
+				if err := WriteHandoffFile(handoff, filepath.Join("inbox", name), img.Data, 0o644); err != nil {
 					return nil, err
 				}
 				fmt.Fprintf(&b, "\n- image: inbox/%s", name)
@@ -270,7 +269,7 @@ func WriteInbox(handoff string, msgs []InboxMessage, note string) ([]string, err
 		}
 		b.WriteString("\n\n")
 	}
-	return ids, os.WriteFile(filepath.Join(handoff, "INBOX.md"), []byte(b.String()), 0o644)
+	return ids, WriteHandoffFile(handoff, "INBOX.md", []byte(b.String()), 0o644)
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }

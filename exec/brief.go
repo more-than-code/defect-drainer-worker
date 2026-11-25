@@ -389,20 +389,20 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 // WriteHandoffBrief writes BRIEF.md, the DD-owned PROCESS.md worker contract,
 // the generated SKILLS.md path listing, and the sandbox-writable harvest dirs.
 func WriteHandoffBrief(handoff string, input BatchFixBriefInput) error {
-	if err := os.MkdirAll(filepath.Join(handoff, "fix-evidence"), 0o755); err != nil {
+	if err := EnsureHandoffDir(handoff, "fix-evidence"); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(handoff, "fix-notes"), 0o755); err != nil {
+	if err := EnsureHandoffDir(handoff, "fix-notes"); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(handoff, "PROCESS.md"), []byte(processMarkdown), 0o644); err != nil {
+	if err := WriteHandoffFile(handoff, "PROCESS.md", []byte(processMarkdown), 0o644); err != nil {
 		return err
 	}
 	skills := BuildSkillsMarkdown(input.Worktrees)
-	if err := os.WriteFile(filepath.Join(handoff, "SKILLS.md"), []byte(skills), 0o644); err != nil {
+	if err := WriteHandoffFile(handoff, "SKILLS.md", []byte(skills), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(handoff, "BRIEF.md"), []byte(BuildBatchFixBrief(input)), 0o644)
+	return WriteHandoffFile(handoff, "BRIEF.md", []byte(BuildBatchFixBrief(input)), 0o644)
 }
 
 // browserBriefSection is the brief's Screenshots section for a worker

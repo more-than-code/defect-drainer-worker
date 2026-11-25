@@ -104,8 +104,12 @@ func sdkCopyKind() string {
 	return "full copy"
 }
 
-func writeFlutterShims(binDir, sdkDir, homeDir, pubCache string) error {
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
+func writeFlutterShims(handoffAbs, binDir, sdkDir, homeDir, pubCache string) error {
+	binRel, err := filepath.Rel(handoffAbs, binDir)
+	if err != nil {
+		return err
+	}
+	if err := EnsureHandoffDir(handoffAbs, binRel); err != nil {
 		return err
 	}
 	for _, tool := range []string{"flutter", "dart"} {
@@ -120,8 +124,7 @@ func writeFlutterShims(binDir, sdkDir, homeDir, pubCache string) error {
 			"exec " + shJSON(filepath.Join(sdkDir, "bin", tool)) + ` "$@"`,
 			"",
 		}, "\n")
-		shim := filepath.Join(binDir, tool)
-		if err := os.WriteFile(shim, []byte(body), 0o755); err != nil {
+		if err := WriteHandoffFile(handoffAbs, filepath.Join(binRel, tool), []byte(body), 0o755); err != nil {
 			return err
 		}
 	}
@@ -172,12 +175,19 @@ func ProvisionFlutterToolchain(handoffAbs string, worktrees []git.WorktreeBindin
 	pubCache := filepath.Join(tooling, "pub-cache")
 	binDir := filepath.Join(tooling, "bin")
 
-	if err := os.MkdirAll(tooling, 0o755); err != nil {
+	// The handoff is reused on Resume and Rerun, and the agent can write all
+	// of .tooling. Start from nothing each run, so nothing the agent left
+	// there (a planted binary, a symlink) survives into this one.
+	if err := os.RemoveAll(tooling); err != nil {
 		onLog("toolchain: provisioning failed — skipped ("+err.Error()+")", "warn")
 		return NO_TOOLCHAIN
 	}
-	_ = os.MkdirAll(homeDir, 0o755)
-	_ = os.MkdirAll(pubCache, 0o755)
+	for _, rel := range []string{".tooling/home", ".tooling/pub-cache"} {
+		if err := EnsureHandoffDir(handoffAbs, rel); err != nil {
+			onLog("toolchain: provisioning failed — skipped ("+err.Error()+")", "warn")
+			return NO_TOOLCHAIN
+		}
+	}
 
 	started := time.Now()
 	cp := exec.Command("cp", sdkCopyArgs(source, sdkDir)...)
@@ -191,14 +201,17 @@ func ProvisionFlutterToolchain(handoffAbs string, worktrees []git.WorktreeBindin
 	}
 	secs := time.Since(started).Seconds()
 
-	if err := writeFlutterShims(binDir, sdkDir, homeDir, pubCache); err != nil {
+	if err := writeFlutterShims(handoffAbs, binDir, sdkDir, homeDir, pubCache); err != nil {
 		onLog("toolchain: provisioning failed — skipped ("+err.Error()+")", "warn")
 		return NO_TOOLCHAIN
 	}
 
+	// Probe the host SDK, never the handoff copy: this runs as the worker,
+	// outside the agent's sandbox, so it must not execute anything the agent
+	// can write.
 	pctx, pcancel := context.WithTimeout(context.Background(), 180*time.Second)
-	probe := exec.CommandContext(pctx, filepath.Join(binDir, "flutter"), "--version")
-	probe.Env = git.FilterInheritedEnv(os.Environ(), strip)
+	probe := exec.CommandContext(pctx, filepath.Join(source, "bin", "flutter"), "--version")
+	probe.Env = append(git.FilterInheritedEnv(os.Environ(), strip), "FLUTTER_SUPPRESS_ANALYTICS=true")
 	pout, perr := probe.CombinedOutput()
 	pcancel()
 	if perr != nil {
@@ -209,7 +222,7 @@ func ProvisionFlutterToolchain(handoffAbs string, worktrees []git.WorktreeBindin
 		if i := strings.IndexByte(why, '\n'); i >= 0 {
 			why = why[:i]
 		}
-		onLog("toolchain: provisioned SDK failed its probe — skipped ("+why+")", "warn")
+		onLog("toolchain: host SDK failed its probe — skipped ("+why+")", "warn")
 		return NO_TOOLCHAIN
 	}
 

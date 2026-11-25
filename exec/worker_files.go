@@ -2,10 +2,11 @@ package exec
 
 import (
 	"bufio"
-	"os"
+	"bytes"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/more-than-code/defect-drainer-worker/git"
 )
@@ -141,14 +142,18 @@ func foldBlock(lines []string, start int) string {
 // Nested maps and every other key are ignored.
 // ok is false when the file has no frontmatter or no usable name — the caller
 // lists it as unreadable and carries on rather than failing the job.
-func skillFrontmatter(path string) (name, description string, ok bool) {
-	f, err := os.Open(path)
-	if err != nil {
+//
+// The file is repo content, read by the worker outside the agent's sandbox, so
+// it must be a regular file inside worktreeAbs: a SKILL.md symlink (or a
+// symlinked skill directory) that points at a host file is listed as
+// unreadable, never read.
+func skillFrontmatter(worktreeAbs, path string) (name, description string, ok bool) {
+	data, _, readOK := ReadRegularFile(worktreeAbs, path, time.Time{})
+	if !readOK {
 		return "", "", false
 	}
-	defer f.Close()
 
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 0, 8*1024), 64*1024)
 	if !sc.Scan() || strings.TrimSpace(sc.Text()) != "---" {
 		return "", "", false
@@ -209,7 +214,7 @@ func skillsIn(worktreeAbs string) []skillEntry {
 		}
 		sort.Strings(matches)
 		for _, m := range matches {
-			name, desc, ok := skillFrontmatter(m)
+			name, desc, ok := skillFrontmatter(worktreeAbs, m)
 			if !ok {
 				out = append(out, skillEntry{path: m})
 				continue

@@ -3,7 +3,6 @@ package exec
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -57,7 +56,7 @@ func WriteShotSignIn(handoff string, c ShotSignIn) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(handoff, ShotSignInName), b, 0o600)
+	return WriteHandoffFile(handoff, ShotSignInName, b, 0o600)
 }
 
 // ReadShotSignIn reads a file WriteShotSignIn wrote.
