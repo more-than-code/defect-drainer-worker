@@ -2,6 +2,9 @@
 
 - **Status:** Accepted (records the existing design; written 2026-11-23)
 - **Defect:** DEF-20261123-document-why-worker-jobs-are-sandboxed-w-o22o
+- **Status note (2026-11-25):** the two gaps in §6 (no per-job cgroup limits,
+  no seccomp filter in the verify sandbox) are being closed in PR #16. Until it
+  merges, §2, §5 and §6 describe the design as it stands on `main`.
 - **Scope:** how `dd-worker` keeps one coding-agent job away from the host,
   the worker's own state and other jobs
 
@@ -18,7 +21,7 @@ from:
 - the worker's credential, policy and state;
 - other jobs on the same host, and the shipped branch.
 
-The target hosts are small Linux machines. Joe runs workers on Raspberry Pis,
+The target hosts are small Linux machines. The maintainer runs workers on Raspberry Pis,
 not on the Mac (recorded in the control plane's `docs/claude-code-runner.md`,
 Antigravity decision). The install guide lists "a Raspberry Pi 4/5 with
 64-bit OS" as a supported host (`docs/host-setup.md`).
@@ -84,7 +87,7 @@ is an inference, it says so.
 
 ## 4. Resource cost: Docker and the alternatives
 
-Joe's question: does Docker cost more RAM, CPU, disk and time? Short answer:
+The question this ADR answers: does Docker cost more RAM, CPU, disk and time? Short answer:
 **on Linux, the per-job runtime overhead of a container is small; the real
 costs are a daemon that is always resident, gigabytes of image storage, slower
 job starts, and image upkeep. On a Mac, Docker Desktop's VM is the big cost.**
