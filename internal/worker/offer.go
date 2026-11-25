@@ -247,6 +247,9 @@ func (w *Worker) evaluate(ctx context.Context, f workerproto.Offer, startedBy st
 	if org == "" || !pol.HasOrg(org) {
 		return declineOf(workerproto.DeclinePolicyDenied, "org not in policy.orgs")
 	}
+	if why := w.limitsUnavailable(pol); why != "" {
+		return declineOf(workerproto.DeclinePolicyDenied, why)
+	}
 	if !w.serverHasGitToken() {
 		// §14: this worker clones and ships only with server-minted tokens.
 		return declineOf(workerproto.DeclineBadSpec, workerproto.DetailServerLacksGitToken)

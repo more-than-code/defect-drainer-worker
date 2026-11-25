@@ -270,6 +270,7 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 		w.mu.Lock()
 		delete(w.jobs, j.id)
 		w.mu.Unlock()
+		j.releaseCgroupFDs()
 		return ok(nil)
 	}
 	return fail(workerproto.CodeBadFrame, "unknown control.kind")
