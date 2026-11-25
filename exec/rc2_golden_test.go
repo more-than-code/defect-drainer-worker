@@ -11,7 +11,8 @@ import (
 
 // checkGolden compares got with testdata/rc2/<name>. DD_UPDATE_GOLDEN=1
 // rewrites the file; the goldens were captured from v0.2.0-rc2 (0728df1)
-// before the worker-browser change (AC6: a job without Browser is rc2).
+// before the worker-browser change (AC6: a job without Browser is rc2), and
+// rewritten once on purpose for the data, never-yield and secrets rules (toyg).
 func checkGolden(t *testing.T, name string, got []byte) {
 	t.Helper()
 	path := filepath.Join("testdata", "rc2", name)
