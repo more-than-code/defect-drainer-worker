@@ -43,20 +43,20 @@ type TestBriefInput struct {
 // WriteTestHandoff writes a test job's handoff: results/, evidence/,
 // PROCESS.md, SKILLS.md and BRIEF.md.
 func WriteTestHandoff(handoff string, in TestBriefInput) error {
-	if err := os.MkdirAll(filepath.Join(handoff, "results"), 0o755); err != nil {
+	if err := EnsureHandoffDir(handoff, "results"); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(handoff, "evidence"), 0o755); err != nil {
+	if err := EnsureHandoffDir(handoff, "evidence"); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(handoff, "PROCESS.md"), []byte(testProcessMarkdown), 0o644); err != nil {
+	if err := WriteHandoffFile(handoff, "PROCESS.md", []byte(testProcessMarkdown), 0o644); err != nil {
 		return err
 	}
 	skills := BuildSkillsMarkdown(in.Worktrees)
-	if err := os.WriteFile(filepath.Join(handoff, "SKILLS.md"), []byte(skills), 0o644); err != nil {
+	if err := WriteHandoffFile(handoff, "SKILLS.md", []byte(skills), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(handoff, "BRIEF.md"), []byte(BuildTestBrief(in)), 0o644)
+	return WriteHandoffFile(handoff, "BRIEF.md", []byte(BuildTestBrief(in)), 0o644)
 }
 
 // testArtifactsComplete is the test job's loop stop: RUN.md, and a result

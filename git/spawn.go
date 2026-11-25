@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -921,7 +919,7 @@ func StartCodingAgent(handoffAbs, batchID, defectsRoot string, worktrees []Workt
 		stream.onEnd = opts.OnEnd
 		stream.onMaxTurns = opts.OnMaxTurns
 	}
-	logf, err := os.OpenFile(handoffAbs+"/agent.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logf, err := openAgentLog(handoffAbs)
 	// reds are the agent.log redactors, innermost first.
 	var reds []*redactWriter
 	if err == nil {
@@ -1133,7 +1131,7 @@ func StartReviewAgent(opts ReviewAgentOpts) (ReviewResult, error) {
 	stream.onEnd = func(e AgentEnd) { end = e }
 	stream.onTool = func(raw []byte) { tools = append(tools, raw) }
 
-	logf, logErr := os.OpenFile(filepath.Join(opts.Cwd, "agent.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logf, logErr := openAgentLog(opts.Cwd)
 	if logErr == nil {
 		var start int64
 		if st, serr := logf.Stat(); serr == nil {
