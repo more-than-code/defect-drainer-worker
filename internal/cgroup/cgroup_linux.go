@@ -2,6 +2,8 @@ package cgroup
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -115,9 +117,16 @@ func (m *Manager) selfTest() error {
 		return err
 	}
 	defer j.Close()
+	defer j.Release()
 	cmd := exec.Command("/bin/true")
 	cmd.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: j.FD()}
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		if errors.Is(err, syscall.ENOSYS) || errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.E2BIG) {
+			return fmt.Errorf("%v (CLONE_INTO_CGROUP needs Linux 5.7 or newer)", err)
+		}
+		return err
+	}
+	return nil
 }
 
 // ownDir is this process's cgroup v2 dir: its "0::" line in
@@ -215,6 +224,31 @@ func (m *Manager) removeStale() {
 
 var unsafeName = regexp.MustCompile(`[^A-Za-z0-9_.-]`)
 
+// jobName is run's cgroup name: a readable prefix and a hash of the whole
+// run name, so two long ids that share a prefix never get the same dir.
+func jobName(run string) string {
+	sum := sha256.Sum256([]byte(run))
+	readable := unsafeName.ReplaceAllString(run, "_")
+	if len(readable) > 48 {
+		readable = readable[:48]
+	}
+	return jobPrefix + readable + "-" + hex.EncodeToString(sum[:6])
+}
+
+// PidsMax is the delegated dir's own pids.max (the unit's TasksMax): 0
+// when it is unlimited or unknown.
+func (m *Manager) PidsMax() int64 {
+	data, err := os.ReadFile(filepath.Join(m.dir, "pids.max"))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // Job makes run's cgroup with l and opens it. Every controller l needs must
 // be enabled, or the job gets no cgroup and an error.
 func (m *Manager) Job(run string, l Limits) (*Job, error) {
@@ -223,18 +257,22 @@ func (m *Manager) Job(run string, l Limits) (*Job, error) {
 			return nil, fmt.Errorf("the %s controller is not delegated", c)
 		}
 	}
-	name := jobPrefix + unsafeName.ReplaceAllString(run, "_")
-	if len(name) > 96 {
-		name = name[:96]
-	}
-	dir := filepath.Join(m.dir, name)
-	if _, err := os.Stat(dir); err == nil {
-		_ = destroy(dir)
-	}
+	dir := filepath.Join(m.dir, jobName(run))
+	// A dir of that name belongs to a run still being cleaned up, or a
+	// live one: never reuse or kill it.
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		return nil, err
 	}
-	for _, f := range l.files() {
+	files := l.files()
+	// The memory limit is RAM: with swap allowed a job at its limit
+	// swap-thrashes the host instead of being stopped. memory.swap.max
+	// exists only with swap accounting.
+	if l.MemoryBytes > 0 {
+		if _, err := os.Stat(filepath.Join(dir, "memory.swap.max")); err == nil {
+			files = append(files, [2]string{"memory.swap.max", "0"})
+		}
+	}
+	for _, f := range files {
 		if err := os.WriteFile(filepath.Join(dir, f[0]), []byte(f[1]), 0); err != nil {
 			_ = destroy(dir)
 			return nil, fmt.Errorf("%s: %v", f[0], err)
@@ -283,15 +321,20 @@ func (j *Job) Empty() bool {
 	return err != nil || len(p) == 0
 }
 
-// Close kills what is left in the job, removes its cgroup and closes the
-// dir.
+// Close kills what is left in the job and removes its cgroup. The dir fd
+// stays open (Release closes it): a spawn that still holds the number then
+// fails on the removed cgroup instead of landing in whatever a reused fd
+// number would name.
 func (j *Job) Close() error {
-	err := destroy(j.dir)
+	return destroy(j.dir)
+}
+
+// Release closes the dir fd, once nothing can spawn with it.
+func (j *Job) Release() {
 	if j.fd > 0 {
 		_ = unix.Close(j.fd)
-		j.fd = 0
+		j.fd = -1
 	}
-	return err
 }
 
 // destroy kills every process in dir (cgroup.kill, Linux 5.14; else

@@ -17,7 +17,9 @@ import (
 //
 // Inside the sandbox nothing may mount, change root, join or create a
 // namespace (clone with a CLONE_NEW* flag, unshare, setns), load kernel
-// code, use BPF, perf, keyrings, userfaultfd or file handles, or change the
+// code, use BPF, perf, keyrings, userfaultfd or file handles, open an
+// AF_VSOCK socket (not namespaced: it reaches the hypervisor on a VM host),
+// set a personality other than Docker's allowed ones, or change the
 // clock, swap, quotas, accounting or the machine's power state. ptrace and
 // process_vm_* stay allowed: the sandbox has its own PID namespace, and some
 // test tools (sanitizers, debuggers) need them.
@@ -55,7 +57,18 @@ type seccompTable struct {
 	// clone is the clone syscall: allowed unless its flags ask for a new
 	// namespace.
 	clone uint32
+	// socket is the socket syscall: allowed unless its domain is
+	// AF_VSOCK. personality is allowed only with personalityAllowed.
+	socket, personality uint32
 }
+
+// afVsock is AF_VSOCK.
+const afVsock = 40
+
+// personalityAllowed are the personality values Docker's default profile
+// allows: PER_LINUX, PER_LINUX32, UNAME26 with each, and the 0xffffffff
+// query. Anything else (READ_IMPLIES_EXEC, ADDR_NO_RANDOMIZE, …) is EPERM.
+var personalityAllowed = []uint32{0x0, 0x8, 0x20000, 0x20008, 0xffffffff}
 
 type sockFilter struct {
 	code   uint16
@@ -95,10 +108,31 @@ func (t seccompTable) program() ([]byte, error) {
 	for _, nr := range t.enosys {
 		add(bpfJeqK, nr, lENOSYS, lNext)
 	}
-	add(bpfJeqK, t.clone, lNext, lAllow)
+	// Calls checked by their first argument jump to their own block, laid
+	// out after the shared returns' labels are known: lClone, lSocket and
+	// lPersonality are resolved below like the returns.
+	const (
+		lClone = lAllow + 1 + iota
+		lSocket
+		lPersonality
+	)
+	add(bpfJeqK, t.clone, lClone, lNext)
+	add(bpfJeqK, t.socket, lSocket, lNext)
+	add(bpfJeqK, t.personality, lPersonality, lAllow)
+	ret := map[int]int{}
+	ret[lClone] = len(p)
 	add(bpfLdWAbs, offArg0Low, lNext, lNext)
 	add(bpfJsetK, cloneNewMask, lEPERM, lAllow)
-	ret := map[int]int{lEPERM: len(p), lENOSYS: len(p) + 1, lAllow: len(p) + 2}
+	ret[lSocket] = len(p)
+	add(bpfLdWAbs, offArg0Low, lNext, lNext)
+	add(bpfJeqK, afVsock, lEPERM, lAllow)
+	ret[lPersonality] = len(p)
+	add(bpfLdWAbs, offArg0Low, lNext, lNext)
+	for _, v := range personalityAllowed {
+		add(bpfJeqK, v, lAllow, lNext)
+	}
+	add(bpfRetK, retErrno|errEPERM, lNext, lNext)
+	ret[lEPERM], ret[lENOSYS], ret[lAllow] = len(p), len(p)+1, len(p)+2
 	add(bpfRetK, retErrno|errEPERM, lNext, lNext)
 	add(bpfRetK, retErrno|errENOSYS, lNext, lNext)
 	add(bpfRetK, retAllow, lNext, lNext)

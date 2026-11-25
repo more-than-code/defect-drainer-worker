@@ -267,13 +267,19 @@ What a verify command can reach:
   `EPERM`: mounting, changing root, creating or joining a namespace (`unshare`,
   `setns`, `clone` with a `CLONE_NEW*` flag), loading kernel code (modules,
   kexec), BPF, `perf_event_open`, keyrings, `userfaultfd`, file handles
-  (`open_by_handle_at`), and setting the clock, swap, quotas, accounting, the
-  kernel log or the power state. `clone3` and io_uring fail with `ENOSYS`, so
+  (`open_by_handle_at`), `AF_VSOCK` sockets (they reach the hypervisor on a
+  VM host), a personality other than Docker's allowed set, and setting the
+  clock, swap, quotas, accounting, the kernel log or the power state. `clone3` and io_uring fail with `ENOSYS`, so
   libc falls back to `clone` and Node's libuv to its thread pool. A call
   through another architecture's table (i386 or x32 on amd64, arm32 on arm64)
   is refused. `ptrace` stays allowed: the sandbox has its own PID namespace,
   and sanitizers and debuggers need it. The self-test checks that the filter
-  is loaded; without it the sandbox is unavailable.
+  is loaded: `setarch -R` (util-linux) must be refused, and on Linux 5.9 or
+  newer the command must run under one more filter than the worker. Before
+  5.9 the `setarch` probe is the only check, so a host without `setarch`
+  has no verify sandbox there. Without the filter the sandbox is
+  unavailable. `dd-worker status` also prints `seccomp: on (1 filter)`
+  when the unit's own filter applies to the worker.
 - **Environment:** built for the check, not inherited: `PATH`, an empty
   `HOME`, `TMPDIR`, `LANG`, `CI=1`, the proxy variables, and cache dirs for
   npm, Go, pip, pub, cargo and XDG. Nothing from `secrets.env`, no adapter
@@ -341,19 +347,48 @@ bounds each job.
   | `policy.toml` key | Limit | Default |
   |---|---|---|
   | `job_memory_max` | memory, as `"3G"`, `"512M"` or bytes (at least `"256M"`) | 75% of the host's RAM, shared by `max_jobs` |
-  | `job_tasks_max` | processes and threads (64 to 1048576) | 4096 |
+  | `job_tasks_max` | processes and threads (64 to 1048576) | 4096, or the unit's `TasksMax` less 512 for the worker, shared by `max_jobs`, if that is lower |
   | `job_cpu_percent` | CPU time, 100 per CPU (`150`: one and a half) | none (the unit's CPU weight applies) |
 
-  A job that reaches its memory limit has processes killed by the kernel
-  (only its own), and the job log says `job limits: the job reached its
-  memory limit`. The job log's first lines name the limits it runs with.
+  The memory limit is RAM: where the kernel accounts swap, a job with a
+  memory limit may not swap (`memory.swap.max = 0`), so a runaway job is
+  stopped instead of swap-thrashing the host. A job that reaches its memory
+  limit has processes killed by the kernel (only its own), and the job log
+  says `job limits: the job reached its memory limit … Raise job_memory_max
+  in policy.toml if the job needs more`. The job log's first lines name the
+  limits it runs with.
 
-`dd-worker status` prints `job limits: memory 3 GiB, 4096 tasks per job`, or
-`off (<reason>)` when the worker can't set them: an older unit without
-`Delegate=`, cgroup v1, a kernel before 5.7, or a worker started by hand
-rather than by systemd. Jobs then run under the unit's limits only. A policy
-that sets any `job_*` key is stricter: while the limits are off, the worker
-declines every job (`policy_denied`, with the reason in its log).
+`dd-worker status` prints what each job's cgroup actually gets, for example
+`job limits: memory 3 GiB, 4096 tasks per job`. A default whose controller
+the unit did not delegate is left out and named: `…; not limited: memory
+(controller not delegated)`. It prints `off (<reason>)` when the worker
+can't set any: an older unit without `Delegate=`, cgroup v1, a kernel before
+5.7, or a worker started by hand rather than by systemd. Jobs then run under
+the unit's limits only. The hello tells the server too (`job_limits`,
+capability `job_limits.v1` only while they are enforced). A policy that sets
+any `job_*` key is stricter: while a limit it names can't be enforced, the
+worker declines every offer (`policy_denied`, with the reason in its log),
+and status ends with `declining every job until fixed`.
+
+**Raspberry Pi OS:** its kernel has the memory controller off unless the
+boot command line asks for it, so neither the unit's `MemoryMax` nor a job's
+memory limit applies. Add `cgroup_enable=memory` to the single line in
+`/boot/firmware/cmdline.txt` (`/boot/cmdline.txt` on older images) and
+reboot; `cat /sys/fs/cgroup/cgroup.controllers` then lists `memory`.
+
+**On upgrade to rc10** the default memory limit starts to apply with no
+policy change: with `max_jobs = 3` on a 4 GB host that is about 1 GiB for a
+job's agent, browser and build together. Set `job_memory_max` (or lower
+`max_jobs`) before upgrading a host whose jobs need more. After `install.sh
+upgrade`, check `dd-worker status`: the upgrade passes on "connected" and
+does not check the limits line.
+
+**What the limits do not stop:** the coding agent's CLI itself runs as the
+`dd-worker` user, outside its own sandbox, and the delegated cgroup tree
+belongs to that user. A CLI that wanted to could raise its own job's limits
+or leave its cgroup; the unit's limits still bound it. The commands the
+agent runs are in its sandbox, which may not write the cgroup tree. The
+limits are there to stop runaway builds and tests, not a hostile CLI.
 
 ### After-fix screenshots
 

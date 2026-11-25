@@ -159,6 +159,12 @@ matters, and a microVM per job (Firecracker or Kata) is the right step up,
 on x86 or server ARM hosts with KVM, not on Pis. Containers alone would not
 fix that.
 
+**Status, 2026-11-25:** both gaps are closed in worker PR #16 (0.2.0-rc10):
+per-job cgroup v2 limits under a delegated unit cgroup, unit-wide
+`MemoryMax`/`TasksMax`, a deny-list seccomp filter in the verify sandbox and a
+looser `SystemCallFilter` on the whole unit (the agent included). See the
+host setup guide, Resource limits and Verify sandbox.
+
 ## 7. Follow-ups
 
 - File the two gaps above as defects (per-job cgroup limits; seccomp in the

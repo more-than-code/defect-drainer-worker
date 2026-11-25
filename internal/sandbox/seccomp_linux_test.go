@@ -73,6 +73,22 @@ func seccompChild(t *testing.T) {
 	if raw(unix.SYS_GETPID) != 0 {
 		t.Error("getpid was denied")
 	}
+	// socket: AF_VSOCK refused, ordinary families allowed.
+	if got := raw(unix.SYS_SOCKET, unix.AF_VSOCK, unix.SOCK_STREAM, 0); got != unix.EPERM {
+		t.Errorf("AF_VSOCK socket: %v", got)
+	}
+	if fd, _, e := unix.Syscall(unix.SYS_SOCKET, unix.AF_UNIX, unix.SOCK_STREAM, 0); e != 0 {
+		t.Errorf("AF_UNIX socket: %v", e)
+	} else {
+		_ = unix.Close(int(fd))
+	}
+	// personality: the query and PER_LINUX pass, ADDR_NO_RANDOMIZE doesn't.
+	if _, _, e := unix.Syscall(unix.SYS_PERSONALITY, 0xffffffff, 0, 0); e != 0 {
+		t.Errorf("personality query: %v", e)
+	}
+	if got := raw(unix.SYS_PERSONALITY, 0x0040000); got != unix.EPERM {
+		t.Errorf("personality ADDR_NO_RANDOMIZE: %v", got)
+	}
 	// clone stays allowed, but not with a namespace flag.
 	if err := exec.Command("/bin/true").Run(); err != nil {
 		t.Errorf("plain fork+exec: %v", err)

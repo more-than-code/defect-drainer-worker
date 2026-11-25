@@ -275,6 +275,9 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	if snap.JobLimits != "" {
 		fmt.Fprintf(stdout, "job limits: %s\n", snap.JobLimits)
 	}
+	if snap.Seccomp != "" {
+		fmt.Fprintf(stdout, "seccomp:    %s\n", snap.Seccomp)
+	}
 	return code
 }
 

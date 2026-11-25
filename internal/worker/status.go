@@ -32,6 +32,9 @@ type Snapshot struct {
 	// JobLimits are the per-job cgroup limits: "memory 3 GiB, 4096 tasks
 	// per job" or "off (<reason>)".
 	JobLimits string `json:"jobLimits,omitempty"`
+	// Seccomp is the worker's own seccomp state, from the unit's
+	// SystemCallFilter: "on (1 filter)" or "off".
+	Seccomp string `json:"seccomp,omitempty"`
 }
 
 func snapshotPath(p Paths) string { return p.StatusFile() }
@@ -51,6 +54,7 @@ func (w *Worker) writeSnapshot(connected bool) {
 	s.Tools = w.toolsNow()
 	s.VerifySandbox = verifySandboxLine(w.verifyNow().err)
 	s.JobLimits = w.limitsLine(w.policyNow())
+	s.Seccomp = seccompLine()
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return

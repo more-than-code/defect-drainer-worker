@@ -164,6 +164,8 @@ type Hello struct {
 	Policy       Policy          `json:"policy"`
 	// Additive in 0.2.0-rc9 (sandboxed verify, §19).
 	VerifySandbox *VerifySandboxStatus `json:"verify_sandbox,omitempty"`
+	// Additive in 0.2.0-rc10 (per-job limits, §20).
+	JobLimits *JobLimitsStatus `json:"job_limits,omitempty"`
 }
 
 type HelloOK struct {

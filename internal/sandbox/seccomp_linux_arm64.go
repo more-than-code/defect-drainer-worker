@@ -4,7 +4,9 @@ import "golang.org/x/sys/unix"
 
 func archTable() seccompTable {
 	return seccompTable{
-		auditArch: unix.AUDIT_ARCH_AARCH64,
-		clone:     unix.SYS_CLONE,
+		auditArch:   unix.AUDIT_ARCH_AARCH64,
+		clone:       unix.SYS_CLONE,
+		socket:      unix.SYS_SOCKET,
+		personality: unix.SYS_PERSONALITY,
 	}
 }

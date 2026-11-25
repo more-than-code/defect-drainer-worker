@@ -248,3 +248,13 @@ func TestSeccompArgAndFailClosed(t *testing.T) {
 		t.Fatalf("a launcher without a filter: %v", err)
 	}
 }
+
+func TestFilterLoadedNeedsTheProbe(t *testing.T) {
+	// A personality the verify filter refuses got through: no filter.
+	if filterLoaded("F:99\nM:2\nP:allowed\n") {
+		t.Fatal("an allowed personality passed")
+	}
+	if filterLoaded("F:99\nM:0\nP:denied\n") {
+		t.Fatal("seccomp mode 0 passed")
+	}
+}

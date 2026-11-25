@@ -65,7 +65,7 @@ func TestJobHoldsTheWholeTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Base(j.Dir()) != "job-bjob_1_2" {
+	if !strings.HasPrefix(filepath.Base(j.Dir()), "job-bjob_1_2-") {
 		t.Fatalf("name %s", j.Dir())
 	}
 	cmd := exec.Command("/bin/sh", "-c", "sleep 300 & echo $!; wait")
@@ -86,7 +86,7 @@ func TestJobHoldsTheWholeTree(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(data), "/job-bjob_1_2\n") {
+		if !strings.Contains(string(data), "/"+filepath.Base(j.Dir())+"\n") {
 			t.Fatalf("pid %s is in %s", pid, data)
 		}
 	}
@@ -106,6 +106,15 @@ func TestJobHoldsTheWholeTree(t *testing.T) {
 	if _, err := os.Stat(j.Dir()); !os.IsNotExist(err) {
 		t.Fatalf("cgroup kept: %v", err)
 	}
+	// The fd stays open after Close: a late spawn with it fails on the
+	// removed cgroup rather than landing anywhere else.
+	late := exec.Command("/bin/true")
+	late.SysProcAttr = &syscall.SysProcAttr{}
+	git.IntoCgroup(late.SysProcAttr, j.FD())
+	if err := late.Run(); err == nil {
+		t.Fatal("a spawn into the removed cgroup started")
+	}
+	j.Release()
 	if _, err := os.Stat("/proc/" + grandchild); err == nil {
 		if data, _ := os.ReadFile("/proc/" + grandchild + "/stat"); !strings.Contains(string(data), ") Z ") {
 			t.Fatalf("grandchild %s survived", grandchild)
@@ -117,5 +126,35 @@ func TestJobNeedsItsControllers(t *testing.T) {
 	m := &Manager{dir: t.TempDir(), available: []string{"pids"}}
 	if _, err := m.Job("x", Limits{MemoryBytes: 1 << 30}); err == nil || !strings.Contains(err.Error(), "memory controller") {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestJobNamesDoNotCollide(t *testing.T) {
+	long := strings.Repeat("a", 120)
+	a, b := jobName(long+"-1"), jobName(long+"-2")
+	if a == b || len(a) > 80 || !strings.HasPrefix(a, jobPrefix) {
+		t.Fatalf("%q %q", a, b)
+	}
+	if got := jobName("bjob/1"); !strings.HasPrefix(got, "job-bjob_1-") {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestJobRefusesALiveDir(t *testing.T) {
+	dir := scratch(t)
+	m, err := openAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := m.Job("same", Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close(); j.Release() }()
+	if _, err := m.Job("same", Limits{}); err == nil {
+		t.Fatal("a second job took a live job's cgroup")
+	}
+	if _, err := os.Stat(j.Dir()); err != nil {
+		t.Fatalf("the live job's cgroup was removed: %v", err)
 	}
 }

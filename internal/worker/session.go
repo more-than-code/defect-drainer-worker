@@ -428,9 +428,10 @@ func (w *Worker) helloFrame() workerproto.Hello {
 	v := w.verifyNow()
 	return workerproto.Hello{
 		Header: workerproto.NewHeader(workerproto.TypeHello), WorkerID: workerID,
-		Version: Version, Protocol: workerproto.Protocol, Capabilities: capabilities(v),
+		Version: Version, Protocol: workerproto.Protocol, Capabilities: w.capabilitiesWith(v, pol),
 		MaxJobs: pol.MaxJobs, BusyJobIDs: w.busyIDs(), Adapters: st, Tools: w.toolsNow(), Policy: w.wirePolicy(pol),
 		VerifySandbox: verifySandboxWire(v),
+		JobLimits:     w.limitsWire(pol),
 	}
 }
 
@@ -440,6 +441,15 @@ func capabilities(v verifyState) []string {
 	caps := []string{workerproto.CapBlobsV1, workerproto.CapGitTokenV1, workerproto.CapBrowserV1, workerproto.CapVerifySubmittedV1, workerproto.CapJobStackV1, workerproto.CapProjectKeysV1, workerproto.CapSigninRandomV1}
 	if v.err == nil {
 		caps = append(caps, workerproto.CapVerifySandboxV1)
+	}
+	return caps
+}
+
+// capabilitiesWith adds job_limits.v1 while per-job limits are enforced.
+func (w *Worker) capabilitiesWith(v verifyState, pol Policy) []string {
+	caps := capabilities(v)
+	if _, _, err := w.effectiveLimits(pol); err == nil {
+		caps = append(caps, workerproto.CapJobLimitsV1)
 	}
 	return caps
 }

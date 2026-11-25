@@ -76,7 +76,10 @@ type job struct {
 	proc        *exec.Proc
 	secretEnv   string
 	// cg is the current run's cgroup (per-job limits); nil without one.
-	cg         *cgroup.Job
+	cg *cgroup.Job
+	// oldCgs are ended runs' cgroups, removed but with their fds open
+	// until the job is discarded.
+	oldCgs     []*cgroup.Job
 	ctrlActive int // controls running now: their lease is renewed by ping
 	// gitTokens are this job's minted GitHub tokens (§14), keyed repo+access.
 	// Memory only: never in job.json, the spool or a result.

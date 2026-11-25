@@ -3,6 +3,7 @@ package worker
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -51,7 +52,7 @@ func TestJobLimitsUnavailableDeclines(t *testing.T) {
 	if got := h.fs.declineFor(id); got != workerproto.DeclinePolicyDenied {
 		t.Fatalf("decline %q", got)
 	}
-	if !strings.Contains(h.log.String(), "job limits set in policy.toml but unavailable") {
+	if !strings.Contains(h.log.String(), "job limits set in policy.toml but not enforceable") {
 		t.Fatalf("no reason logged:\n%s", h.log.String())
 	}
 }
@@ -75,18 +76,49 @@ func TestJobRunsInItsCgroup(t *testing.T) {
 		t.Fatalf("done %+v\n%s\n%s", d, events, h.log.String())
 	}
 	got, err := os.ReadFile(seen)
-	if err != nil || !strings.Contains(string(got), "/job-"+id+"-1\n") {
+	if err != nil || !strings.Contains(string(got), "/job-"+id+"-1-") {
 		t.Fatalf("agent's cgroup: %q %v", got, err)
 	}
 	if !strings.Contains(events, "job limits: ") {
 		t.Fatalf("no limits line:\n%s", events)
 	}
 	eventually(t, 15*time.Second, "job cgroup removed", func() bool {
-		_, err := os.Stat(filepath.Join(dir, "job-"+id+"-1"))
-		return os.IsNotExist(err)
+		m, _ := filepath.Glob(filepath.Join(dir, "job-"+id+"-1-*"))
+		return len(m) == 0
 	})
-	if st := h.w.limitsLine(h.w.policyNow()); strings.HasPrefix(st, "off") {
+	// This test's cgroup has no controllers: the default memory and task
+	// limits are dropped, and status says so rather than claiming them.
+	if st := h.w.limitsLine(h.w.policyNow()); !strings.Contains(st, "not limited: memory, pids (controller not delegated)") {
 		t.Fatalf("status %q", st)
+	}
+	if !slices.Contains(h.w.capabilitiesWith(verifyState{}, h.w.policyNow()), workerproto.CapJobLimitsV1) {
+		t.Fatal("no job_limits.v1 while limits are enforced")
+	}
+}
+
+// A limit the policy sets whose controller is not delegated declines the
+// offer up front, and the hello says the limits are not enforced.
+func TestJobLimitMissingControllerDeclines(t *testing.T) {
+	dir := scratchCgroup(t)
+	h := newHarness(t, harnessOpts{
+		policy:  defaultPolicy + "job_memory_max = \"2G\"\n",
+		cgroups: func() (*cgroup.Manager, error) { return cgroup.OpenDir(dir) },
+	})
+	id := "bjob_lim2"
+	h.offerJob(fixSpec(id), nil)
+	eventually(t, 30*time.Second, "decline", func() bool { return h.fs.declineFor(id) != "" })
+	if got := h.fs.declineFor(id); got != workerproto.DeclinePolicyDenied || h.fs.accepted(id) {
+		t.Fatalf("decline %q, accepted %v", got, h.fs.accepted(id))
+	}
+	pol := h.w.policyNow()
+	if st := h.w.limitsLine(pol); !strings.Contains(st, "not enforceable (job_memory_max is set but the memory controller is not delegated); declining every job") {
+		t.Fatalf("status %q", st)
+	}
+	if slices.Contains(h.w.capabilitiesWith(verifyState{}, pol), workerproto.CapJobLimitsV1) {
+		t.Fatal("job_limits.v1 while not enforced")
+	}
+	if wire := h.w.limitsWire(pol); wire.Enforced || wire.Reason == "" {
+		t.Fatalf("hello.job_limits %+v", wire)
 	}
 }
 
