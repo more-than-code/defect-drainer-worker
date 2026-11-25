@@ -77,7 +77,7 @@ func (j *job) launch(d decision, leaseID string) {
 	}
 	j.gen++
 	gen := j.gen
-	// Messages a previous run never took are the server's to resend (§20).
+	// Messages a previous run never took are the server's to resend (§21).
 	j.inbox, j.interrupt = nil, false
 	j.live = true
 	j.cancelled = false
@@ -123,6 +123,20 @@ func (j *job) launch(d decision, leaseID string) {
 	j.mu.Unlock()
 
 	eh := d.host.host(w.opts.Paths, j.id, spec.Model, spec.Worktrees, d.domains)
+	// Per-job limits (DEF-…-68ru): the agent, reviewers and verify start
+	// in the run's own cgroup; the agent may not write the cgroup tree.
+	cg, err := w.jobCgroup(j.id, gen)
+	if err != nil {
+		j.fail(gen, workerproto.ReasonPolicyDenied+": job limits: "+err.Error())
+		return
+	}
+	if cg != nil {
+		if !j.adoptCgroup(gen, cg) {
+			return
+		}
+		eh.CgroupFD = cg.FD()
+		eh.DenyWrite = append(eh.DenyWrite, w.cg.Dir())
+	}
 	// A worker browser job (worker-browser B1, B2): the browser and the
 	// fresh socket masks from the offer's decision.
 	eh.Browser, eh.MaskedSockets = d.browser, d.masked

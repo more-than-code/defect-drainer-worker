@@ -9,7 +9,7 @@ import (
 	"github.com/more-than-code/defect-drainer-worker/workerproto"
 )
 
-// Job messages (§20): the message and interrupt controls hand people's
+// Job messages (§21): the message and interrupt controls hand people's
 // messages to the live run, which takes them at its next turn boundary
 // (exec.Messenger, implemented by runSink).
 

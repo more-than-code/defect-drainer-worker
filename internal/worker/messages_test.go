@@ -11,7 +11,7 @@ import (
 	"github.com/more-than-code/defect-drainer-worker/workerproto"
 )
 
-// §20: an interactive job asks, waits, gets the answer through a message
+// §21: an interactive job asks, waits, gets the answer through a message
 // control at the turn boundary, and finishes. The agent's messages come
 // back as message events, their images as blobs.
 func TestInteractiveJobAsksAndGetsAnAnswer(t *testing.T) {
@@ -102,7 +102,7 @@ func TestInteractiveJobAsksAndGetsAnAnswer(t *testing.T) {
 	}
 }
 
-// §20: an unanswered question times out and the agent is told to go on.
+// §21: an unanswered question times out and the agent is told to go on.
 func TestInteractiveQuestionTimesOut(t *testing.T) {
 	fixture := claudeFixture(t, "c1-basic")
 	agent := "n=$(cat .iter 2>/dev/null || echo 0); n=$((n+1)); echo $n > .iter\n" +
@@ -131,7 +131,7 @@ func TestInteractiveQuestionTimesOut(t *testing.T) {
 	}
 }
 
-// §20: an autonomous job never waits: an ask is a plain message.
+// §21: an autonomous job never waits: an ask is a plain message.
 func TestAutonomousJobDoesNotWait(t *testing.T) {
 	fixture := claudeFixture(t, "c1-basic")
 	agent := "grep -q 'This job is autonomous' MESSAGES.md || exit 4\n" +
@@ -154,7 +154,7 @@ func TestAutonomousJobDoesNotWait(t *testing.T) {
 	}
 }
 
-// §20: a chat run on a finished job resumes the session with no shell and
+// §21: a chat run on a finished job resumes the session with no shell and
 // no edits, answers, and reports a worktree it changed.
 func TestChatRunAnswersReadOnly(t *testing.T) {
 	fixture := claudeFixture(t, "c1-basic")
@@ -218,7 +218,7 @@ func TestChatRunAnswersReadOnly(t *testing.T) {
 	}
 }
 
-// §20: Send now stops the agent mid-step; the next iteration takes the
+// §21: Send now stops the agent mid-step; the next iteration takes the
 // message, and the stopped iteration is not a failure.
 func TestInterruptDeliversAtOnce(t *testing.T) {
 	fixture := claudeFixture(t, "c1-basic")

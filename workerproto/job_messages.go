@@ -1,6 +1,6 @@
 package workerproto
 
-// Job messages (worker protocol v1 §20): people talk with a running job's
+// Job messages (worker protocol v1 §21): people talk with a running job's
 // coding agent, and a finished batch fix answers them in a read-only chat
 // run. Additive to v1.
 //
@@ -13,7 +13,7 @@ package workerproto
 //   - Events "message", "delivered", "waiting" and "chat" report them.
 //     A message event's images travel as blobs, like harvested images.
 
-// CapJobMessagesV1: the worker understands §20.
+// CapJobMessagesV1: the worker understands §21.
 const CapJobMessagesV1 = "job_messages.v1"
 
 // DetailJobNotRunning is a message control's failure detail when the job

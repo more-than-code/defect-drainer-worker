@@ -38,7 +38,7 @@ const (
 	// Reviewer is one fresh, read-only review lens. It never resumes.
 	Reviewer
 	// Chat is a follow-up answer on a finished job (docs/contracts
-	// worker-protocol-v1.md §20): it resumes the implementer's session
+	// worker-protocol-v1.md §21): it resumes the implementer's session
 	// (ResumeID) with read-only tools and no shell, so it can explain the
 	// fix but never change it. Only adapters whose ChatsReadOnly reports
 	// true accept it; the others refuse the Task.

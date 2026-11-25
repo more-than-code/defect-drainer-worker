@@ -34,9 +34,42 @@ CapabilityBoundingSet=
 RestrictSUIDSGID=yes
 LockPersonality=yes
 ProtectKernelTunables=yes
-ProtectControlGroups=yes
 # RestrictNamespaces is deliberately not set: Claude's sandbox (bubblewrap)
 # needs user namespaces.
+
+# Kernel calls (seccomp) for everything the worker runs: the agent and its
+# sandboxed commands, the browser, the job stack and verify. Denied calls
+# fail with EPERM. The groups and names below are what no job needs: the
+# clock, kernel modules, kexec and reboot, swap, raw I/O ports, obsolete and
+# CPU-emulation calls, BPF, perf, keyrings, userfaultfd, file handles,
+# quotas, accounting, the kernel log and io_uring (Node falls back to its
+# thread pool). @mount and the namespace calls stay allowed: Claude's
+# sandbox needs them. The verify sandbox adds a stricter filter of its own
+# that denies those too.
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+SystemCallFilter=~@clock @cpu-emulation @module @obsolete @raw-io @reboot @swap
+SystemCallFilter=~bpf perf_event_open keyctl add_key request_key userfaultfd
+SystemCallFilter=~open_by_handle_at name_to_handle_at acct quotactl quotactl_fd
+SystemCallFilter=~lookup_dcookie syslog fanotify_init vhangup nfsservctl
+SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register
+
+# Resources. The whole worker may use at most 90% of the host's memory
+# (reclaimed hard from 80%) and 8192 tasks, and gets half the default CPU
+# weight, so sshd and the rest of the host stay responsive under a runaway
+# build. A process the kernel kills for memory does not stop the worker.
+MemoryHigh=80%
+MemoryMax=90%
+TasksMax=8192
+CPUWeight=50
+OOMPolicy=continue
+# Per-job limits: systemd hands this unit's cgroup to dd-worker, which
+# gives each job its own child cgroup with policy job_memory_max,
+# job_tasks_max and job_cpu_percent (defaults: 75% of RAM shared by
+# max_jobs, 4096 tasks, no CPU quota). The delegated subtree must be
+# writable, so ProtectControlGroups is not set: the rest of the cgroup tree
+# stays root's, and the agent's sandbox may not write the subtree.
+Delegate=memory pids cpu
 
 [Install]
 WantedBy=multi-user.target

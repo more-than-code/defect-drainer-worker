@@ -9,7 +9,7 @@ import (
 	aa "github.com/more-than-code/defect-drainer-worker/agentadapter"
 )
 
-// §20: a chat task resumes the session with no shell, no edits and no
+// §21: a chat task resumes the session with no shell, no edits and no
 // subagents, and its settings allow reads only.
 func TestChatTaskIsReadOnlyAndResumes(t *testing.T) {
 	a := New(Config{Bin: "/usr/bin/claude"})

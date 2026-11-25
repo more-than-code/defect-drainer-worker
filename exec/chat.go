@@ -13,7 +13,7 @@ import (
 	"github.com/more-than-code/defect-drainer-worker/git"
 )
 
-// Chat runs (§20): a person asks a finished job a question. The run resumes
+// Chat runs (§21): a person asks a finished job a question. The run resumes
 // the implementer's session with read-only tools (agentadapter.Chat), so the
 // agent answers from its own context and can read the code, but it cannot
 // change the fix. Nothing is verified, reviewed, harvested or shipped, and

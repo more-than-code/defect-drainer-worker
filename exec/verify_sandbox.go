@@ -163,6 +163,7 @@ func (v *VerifySandbox) open(h Host, worktrees []git.WorktreeBinding, handoffAbs
 		ReadOnly:  readOnly,
 		Env:       verifySandboxEnv(home, tmp, cache, extraEnv, strip),
 		ProxySock: sock,
+		CgroupFD:  h.CgroupFD,
 	}
 	// Refuse a bad layout now, before any command, as a skip.
 	if _, err := v.Launcher.Args(box.base); err != nil {

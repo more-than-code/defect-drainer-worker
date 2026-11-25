@@ -15,6 +15,7 @@ import (
 	"github.com/more-than-code/defect-drainer-worker/git"
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/config"
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/redact"
+	"github.com/more-than-code/defect-drainer-worker/internal/cgroup"
 	"github.com/more-than-code/defect-drainer-worker/internal/sandbox"
 	"github.com/more-than-code/defect-drainer-worker/workerproto"
 )
@@ -81,6 +82,10 @@ type Options struct {
 	// VerifySandbox finds the verify sandbox and runs its self-test (nil:
 	// bwrap and socat on PATH, then the real self-test). Tests replace it.
 	VerifySandbox func(context.Context) (sandbox.Launcher, error)
+	// Cgroups takes over the worker's delegated cgroup for per-job limits
+	// (cgroup.Open; `dd-worker run` sets it). Nil: no per-job cgroups, as
+	// in tests, which must never move the test process.
+	Cgroups func() (*cgroup.Manager, error)
 }
 
 // Worker is one dd-worker process.
@@ -111,6 +116,12 @@ type Worker struct {
 
 	// verify is the last verify-sandbox self-test.
 	verify verifyState
+
+	// cg is the delegated cgroup per-job limits use; nil with cgErr saying
+	// why. memTotal is the host's RAM, for the default memory limit.
+	cg       *cgroup.Manager
+	cgErr    error
+	memTotal int64
 
 	// masked is the last socket scan's list (policy agent_browser only).
 	masked []string
@@ -149,6 +160,7 @@ func New(opts Options) (*Worker, error) {
 		return nil, err
 	}
 	w.cfg = cfg
+	w.openCgroups()
 	w.reloadHostFiles()
 	if err := os.MkdirAll(opts.Paths.JobsDir(), 0o700); err != nil {
 		return nil, err

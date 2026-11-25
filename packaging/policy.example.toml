@@ -27,6 +27,16 @@ max_turns = 80
 max_wall_sec = 2700
 max_jobs = 1
 
+# Per-job resource limits (cgroup v2; see host-setup, Resource limits). Each
+# job's agent, browser, job stack and verify commands share them. Unset:
+# memory is 75% of the host's RAM shared by max_jobs, 4096 tasks, no CPU
+# quota. Setting any of these makes the worker decline jobs while it can't
+# enforce them (for example under an older unit without Delegate=).
+# Versions before 0.2.0-rc10 refuse these keys: remove them before a rollback.
+# job_memory_max = "3G"
+# job_tasks_max = 4096
+# job_cpu_percent = 200
+
 # A project's verify commands: "sandbox" (the default) runs them in the
 # worker's verify sandbox, with network only to agent_allowed_domains; "off"
 # skips them. There is no unsandboxed setting. The older

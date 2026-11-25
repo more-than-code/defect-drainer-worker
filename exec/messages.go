@@ -13,7 +13,7 @@ import (
 	"unicode/utf8"
 )
 
-// Job messages (worker protocol v1 §20): people talk with a job's coding
+// Job messages (worker protocol v1 §21): people talk with a job's coding
 // agent. A message for the agent waits in the orchestrator until the next
 // turn boundary, when the driver loop writes it to the handoff's INBOX.md
 // and resumes the session with it. The agent talks back by appending lines

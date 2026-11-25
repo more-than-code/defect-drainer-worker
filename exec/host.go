@@ -75,6 +75,11 @@ type Host struct {
 	// (spec V10), which runs them as plain host shell.
 	Verify            *VerifySandbox
 	UnsandboxedVerify bool
+	// CgroupFD is the job's cgroup v2 dir, open (a worker with per-job
+	// limits; 0: none, as in local serve). The implementer, the reviewers
+	// and the verify sandbox start in it, so their descendants (a browser,
+	// a job stack, a build) share the job's memory, CPU and task limits.
+	CgroupFD int
 }
 
 // AgentAdapter is the host's adapter.

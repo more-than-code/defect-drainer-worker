@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/policy"
+	"github.com/more-than-code/defect-drainer-worker/internal/cgroup"
 	"github.com/more-than-code/defect-drainer-worker/workerproto"
 )
 
@@ -35,6 +36,17 @@ const (
 	// DefaultAgentMaxCostUSD is the per-job cost cap when neither the server
 	// nor this policy sets one (spec D5).
 	DefaultAgentMaxCostUSD = 5
+	// Per-job cgroup limits (DEF-…-68ru). Unset job_memory_max is
+	// DefaultJobMemoryPercent of the host's RAM shared by max_jobs; unset
+	// job_tasks_max is DefaultJobTasksMax; unset job_cpu_percent is no
+	// quota (the unit's CPUWeight keeps the host responsive).
+	DefaultJobMemoryPercent = 75
+	DefaultJobTasksMax      = 4096
+	MinJobMemoryMax         = 256 << 20
+	MinJobTasksMax          = 64
+	MaxJobTasksMax          = 1 << 20
+	MinJobCPUPercent        = 10
+	MaxJobCPUPercent        = 100 * 256
 )
 
 // verify_commands values (sandboxed verify, V2). There is no unsandboxed
@@ -66,6 +78,9 @@ var policySchema = policy.Schema{
 	"allowed_models":        policy.Strings,
 	"agent_postgres":        policy.String,
 	"managed_url":           policy.String,
+	"job_memory_max":        policy.String,
+	"job_tasks_max":         policy.Int,
+	"job_cpu_percent":       policy.Int,
 }
 
 // Policy is /etc/dd-worker/policy.toml as the worker enforces it. When
@@ -117,6 +132,14 @@ type Policy struct {
 	// ManagedURL is where the host's manager edits this file (https, at
 	// most MaxManagedURL bytes; "": edited on the host).
 	ManagedURL string
+	// JobMemoryMax, JobTasksMax and JobCPUPercent are the per-job cgroup
+	// limits the file sets (0: the default, see JobLimits). JobLimitsSet
+	// says it sets any of them: such a host declines jobs while it can't
+	// enforce them.
+	JobMemoryMax  int64
+	JobTasksMax   int
+	JobCPUPercent int
+	JobLimitsSet  bool
 
 	repoPatterns []repoURL
 }
@@ -189,6 +212,28 @@ func loadPolicy(files policy.Files, skipOwner bool, uid func(os.FileInfo) (uint3
 			return p
 		}
 		p.MaxCostUSD = c.Int
+	}
+	if s, ok := v["job_memory_max"]; ok {
+		n, err := cgroup.ParseBytes(s.String)
+		if err != nil || n < MinJobMemoryMax {
+			p.Reason = "bad_job_memory_max"
+			return p
+		}
+		p.JobMemoryMax, p.JobLimitsSet = n, true
+	}
+	if t, ok := v["job_tasks_max"]; ok {
+		if t.Int < MinJobTasksMax || t.Int > MaxJobTasksMax {
+			p.Reason = "bad_job_tasks_max"
+			return p
+		}
+		p.JobTasksMax, p.JobLimitsSet = t.Int, true
+	}
+	if c, ok := v["job_cpu_percent"]; ok {
+		if c.Int < MinJobCPUPercent || c.Int > MaxJobCPUPercent {
+			p.Reason = "bad_job_cpu_percent"
+			return p
+		}
+		p.JobCPUPercent, p.JobLimitsSet = c.Int, true
 	}
 	if reason := p.check(); reason != "" {
 		p.Reason = reason
@@ -575,4 +620,21 @@ func canonicalRepo(raw string, pattern bool) (repoURL, error) {
 		out.segs = append(out.segs, s)
 	}
 	return out, nil
+}
+
+// JobLimits are the limits each job's cgroup gets: the file's, else the
+// defaults. memTotal is the host's RAM in bytes (0: unknown, no default
+// memory limit).
+func (p Policy) JobLimits(memTotal int64) cgroup.Limits {
+	l := cgroup.Limits{MemoryBytes: p.JobMemoryMax, Tasks: int64(p.JobTasksMax), CPUs: float64(p.JobCPUPercent) / 100}
+	if l.MemoryBytes == 0 && memTotal > 0 {
+		jobs := int64(max(p.MaxJobs, 1))
+		l.MemoryBytes = memTotal * DefaultJobMemoryPercent / 100 / jobs
+		l.MemoryBytes -= l.MemoryBytes % (1 << 20)
+		l.MemoryBytes = max(l.MemoryBytes, MinJobMemoryMax)
+	}
+	if l.Tasks == 0 {
+		l.Tasks = DefaultJobTasksMax
+	}
+	return l
 }

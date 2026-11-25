@@ -31,7 +31,7 @@ const (
 	// protocol v1 §16): baseline, verify, diff hygiene, review and harvest,
 	// with no coding agent and no branch of DD's own. Batch fix only.
 	ModeVerifySubmitted = "verify_submitted"
-	// ModeChat answers people's messages on a finished batch fix (§20): it
+	// ModeChat answers people's messages on a finished batch fix (§21): it
 	// resumes the implementer's session read-only and runs no baseline,
 	// verify, review or harvest. Chat carries the messages.
 	ModeChat = "chat"
@@ -104,7 +104,7 @@ type JobSpec struct {
 	SubmittedRefs     []SubmittedRef        `json:"submittedRefs,omitempty"`
 	BaselineWorktrees []git.WorktreeBinding `json:"baselineWorktrees,omitempty"`
 
-	// Messaging turns job messages on (§20, job_messages.v1); nil keeps a
+	// Messaging turns job messages on (§21, job_messages.v1); nil keeps a
 	// run as before. Chat is a ModeChat run's input.
 	Messaging *MessagingSpec `json:"messaging,omitempty"`
 	Chat      *ChatSpec      `json:"chat,omitempty"`
@@ -234,7 +234,7 @@ const (
 	EventHarvest      = "harvest"
 	EventTestResults  = "test_results"
 	EventDone         = "done"
-	// Job messages (§20).
+	// Job messages (§21).
 	EventMessage   = "message"
 	EventDelivered = "delivered"
 	EventWaiting   = "waiting"
@@ -393,7 +393,7 @@ const (
 	ControlShip        = "ship"
 	ControlDiscard     = "discard"
 	// ControlMessage hands people's messages to a running job; Interrupt
-	// also stops the agent mid-step to take them (§20).
+	// also stops the agent mid-step to take them (§21).
 	ControlMessage   = "message"
 	ControlInterrupt = "interrupt"
 )
@@ -430,7 +430,7 @@ type Control struct {
 	SpecURL   string     `json:"specUrl,omitempty"`
 	Repo      string     `json:"repo,omitempty"`
 	Repos     []ShipRepo `json:"repos,omitempty"`
-	// Messages are a message control's messages (§20).
+	// Messages are a message control's messages (§21).
 	Messages []InboxMessage `json:"messages,omitempty"`
 }
 

@@ -287,6 +287,10 @@ Do not invent other marker spellings. Do not delegate onward.`
 // CodingAgentOpts is extra spawn wiring (toolchain PATH, job-scoped sandbox
 // profile, prompt notes). Nil is a no-op.
 type CodingAgentOpts struct {
+	// CgroupFD is an open cgroup v2 dir the child starts in (Linux
+	// CLONE_INTO_CGROUP), so it and every descendant share the job's
+	// memory, CPU and task limits. 0 starts it in the caller's cgroup.
+	CgroupFD       int
 	ExtraEnv       map[string]string
 	SandboxProfile string
 	ToolchainNotes []string
@@ -877,6 +881,9 @@ func StartCodingAgent(handoffAbs, batchID, defectsRoot string, worktrees []Workt
 	// sleep or a swap loop otherwise outlives the exit and can still race
 	// the server's review git.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if opts != nil {
+		IntoCgroup(cmd.SysProcAttr, opts.CgroupFD)
+	}
 	// Descendants inherit the stdout pipe. After the leader exits, Wait must
 	// not block on them; the caller SIGKILLs the group once Wait returns.
 	cmd.WaitDelay = 100 * time.Millisecond
@@ -977,6 +984,8 @@ const reviewTextLimit = 26 << 20
 
 // ReviewAgentOpts is a fresh reviewer spawn. It never resumes a session.
 type ReviewAgentOpts struct {
+	// CgroupFD is the job's cgroup, as CodingAgentOpts.CgroupFD.
+	CgroupFD int
 	Cwd      string
 	Prompt   string
 	MaxTurns int
@@ -1091,6 +1100,7 @@ func StartReviewAgent(opts ReviewAgentOpts) (ReviewResult, error) {
 	// Own process group so a wall or Stop kill reaches git/shell grandchildren.
 	// The implementer spawn does not do this.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	IntoCgroup(cmd.SysProcAttr, opts.CgroupFD)
 	cmd.Env = spec.Env
 
 	var text strings.Builder

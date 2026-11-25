@@ -152,7 +152,7 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 		}
 		if spec.IsChat() {
 			// A chat run answers from the job's own worktrees: never cut
-			// fresh ones (§20).
+			// fresh ones (§21).
 			for _, b := range spec.Worktrees {
 				p, err := w.opts.Paths.Worktree(f.JobID, b.Repo)
 				if err != nil {
@@ -286,6 +286,7 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 		w.mu.Lock()
 		delete(w.jobs, j.id)
 		w.mu.Unlock()
+		j.releaseCgroupFDs()
 		return ok(nil)
 	}
 	return fail(workerproto.CodeBadFrame, "unknown control.kind")

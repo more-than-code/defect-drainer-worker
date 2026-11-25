@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +71,13 @@ func (l Launcher) SelfTest(ctx context.Context) error {
 		`echo "R:$(` + ask(selfTestRefused) + `)"`,
 		`if cat ` + filepath.Join(secret, "key") + ` >/dev/null 2>&1; then echo SECRET; fi`,
 		`if touch ` + filepath.Join(ro, "w") + ` 2>/dev/null; then echo ROWRITE; fi`,
+		`echo "F:$(sed -n 's/^Seccomp_filters:[[:space:]]*//p' /proc/self/status)"`,
+		`echo "M:$(sed -n 's/^Seccomp:[[:space:]]*//p' /proc/self/status)"`,
+		// A personality outside Docker's set is refused only by this
+		// filter, not by the unit's: setarch -R asks for
+		// ADDR_NO_RANDOMIZE. util-linux ships setarch on every distro the
+		// worker supports; without it the probe says so.
+		`if ! command -v setarch >/dev/null 2>&1; then echo P:none; elif setarch "$(uname -m)" -R true 2>/dev/null; then echo P:allowed; else echo P:denied; fi`,
 		`touch ./ok`,
 	}, "\n")
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -109,10 +117,41 @@ func (l Launcher) SelfTest(ctx context.Context) error {
 	case strings.Contains(text, "ROWRITE"):
 		return fmt.Errorf("%w: bwrap: a read-only dir was writable", ErrUnavailable)
 	}
+	if !filterLoaded(text) {
+		return fmt.Errorf("%w: seccomp: the filter was not loaded", ErrUnavailable)
+	}
 	if _, err := os.Stat(filepath.Join(work, "ok")); err != nil {
 		return fmt.Errorf("%w: bwrap: the work dir is not writable", ErrUnavailable)
 	}
 	return nil
+}
+
+// filterLoaded reports whether the self-test's command ran under the
+// verify filter. A personality the filter refuses must be refused
+// (setarch -R), and, where the kernel counts filters (Seccomp_filters, 5.9
+// and newer), the command must have one more than this process (the unit
+// adds its own). A kernel before 5.9 relies on the personality probe alone,
+// so there a host without setarch fails closed.
+func filterLoaded(text string) bool {
+	field := func(src, prefix string) string {
+		for _, l := range strings.Split(src, "\n") {
+			if v, ok := strings.CutPrefix(l, prefix); ok {
+				return strings.TrimSpace(v)
+			}
+		}
+		return ""
+	}
+	probe := field(text, "P:")
+	if probe == "allowed" || field(text, "M:") != "2" {
+		return false
+	}
+	status, _ := os.ReadFile("/proc/self/status")
+	if own := field(string(status), "Seccomp_filters:"); own != "" {
+		n, err := strconv.Atoi(own)
+		inN, err2 := strconv.Atoi(field(text, "F:"))
+		return err == nil && err2 == nil && inN > n
+	}
+	return probe == "denied"
 }
 
 // Reason is err as `dd-worker status` and the hello show it.
