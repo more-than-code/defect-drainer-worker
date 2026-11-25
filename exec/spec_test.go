@@ -84,7 +84,15 @@ func fullSpec() JobSpec {
 		Model:             "sonnet",
 		SubmittedRefs:     []SubmittedRef{{Repo: "web", Ref: "fix/header"}},
 		BaselineWorktrees: []git.WorktreeBinding{{Repo: "web", PrimaryAbs: "/p/web", WorktreeAbs: "/b/web", Branch: "base", RepoURL: "git@x:web.git", BaseRef: "main", BaseBranch: "main", BaseSource: "local"}},
+		Messaging:         &MessagingSpec{Autonomy: AutonomyInteractive, AskTimeoutSec: 600, MaxQuestions: 3, AskedSoFar: 1},
+		Chat:              &ChatSpec{Messages: []InboxMessage{fullInbox()}, MaxTurns: 20, MaxWallSec: 600, MaxCostUSD: 1},
 	}
+}
+
+func fullInbox() InboxMessage {
+	return InboxMessage{ID: "jmsg_1", Author: "Joe", Text: "why?", Links: []Link{{URL: "https://x.test", Title: "x"}},
+		Images: []MessageImage{{Filename: "a.png", MIME: "image/png", Data: []byte("png"), SHA256: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0", Size: 3, URL: "https://img.test/a.png"}},
+		At:     "2026-11-25T00:00:00Z"}
 }
 
 func fullEvents() []Event {
@@ -109,6 +117,12 @@ func fullEvents() []Event {
 			Warns: []string{"harvest: ignore results/x.md (unknown step)"}, Ignored: 1, Finish: true,
 		}},
 		{Kind: EventDone, JobID: "bjob_1", Lines: lines, Done: &Done{State: "completed", Line: "batch complete"}},
+		{Kind: EventMessage, JobID: "bjob_1", Lines: lines, Message: &AgentMessage{Text: "t", Links: []Link{{URL: "https://x.test", Title: "x"}},
+			Images: fullInbox().Images, Ask: true, Chat: true, ReplyTo: []string{"jmsg_1"}, Dropped: []string{"link x"}}},
+		{Kind: EventDelivered, JobID: "bjob_1", Lines: lines, Delivered: &Delivered{IDs: []string{"jmsg_1"}, Interrupted: true, TimedOut: true}},
+		{Kind: EventWaiting, JobID: "bjob_1", Lines: lines, Waiting: &Waiting{Until: "2026-11-25T00:30:00Z", Answered: true, TimedOut: true}},
+		{Kind: EventChat, JobID: "bjob_1", Lines: lines, ChatRun: &ChatRun{Turns: 2, CostUSD: 0.1, SessionID: "s", Answered: []string{"jmsg_1"}, Error: "e", Changed: true, OverBudget: true,
+			CostByModel: map[string]agentadapter.ModelCost{"claude-sonnet-4-5": {CostUSD: 0.1, InputTokens: 1, OutputTokens: 2}}}},
 	}
 }
 
@@ -218,6 +232,7 @@ func TestControlRoundTrip(t *testing.T) {
 		{Kind: ControlDiff, JobID: "bjob_1", RequestID: "rq_2", Repo: "webapp"},
 		{Kind: ControlShip, JobID: "bjob_1", RequestID: "rq_3", Repos: []ShipRepo{{Repo: "webapp", Files: []string{"src/a.ts"}, Message: "fix: a", Title: "Fix a", Body: "Fixes DEF-1"}}},
 		{Kind: ControlShipPreview, JobID: "bjob_1", RequestID: "rq_4"},
+		{Kind: ControlInterrupt, JobID: "bjob_1", RequestID: "rq_5", Messages: []InboxMessage{fullInbox()}},
 		{Kind: ControlDiscard, JobID: "bjob_1", RequestID: "rq_5"},
 	} {
 		roundTrip(t, c)

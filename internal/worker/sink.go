@@ -56,6 +56,22 @@ func (j *job) prepare(ctx context.Context, e exec.Event) exec.Event {
 		}
 		e.TestResults = &t
 	}
+	if e.Message != nil && len(e.Message.Images) > 0 {
+		m := *e.Message
+		var files []exec.HarvestFile
+		for i, img := range m.Images {
+			name := img.Filename
+			if !workerproto.ValidRelPath(name) || strings.Contains(name, "/") {
+				name = fmt.Sprintf("image-%d.png", i+1)
+			}
+			files = append(files, exec.HarvestFile{Filename: name, Data: img.Data, SHA256: img.SHA256, Size: img.Size})
+		}
+		m.Images = nil
+		for _, f := range j.blobImages(ctx, files, &notes) {
+			m.Images = append(m.Images, exec.MessageImage{Filename: f.Filename, SHA256: f.SHA256, Size: f.Size})
+		}
+		e.Message = &m
+	}
 	e, truncated := capEvent(e, r)
 	for _, p := range truncated {
 		notes = append(notes, "field truncated: "+p)

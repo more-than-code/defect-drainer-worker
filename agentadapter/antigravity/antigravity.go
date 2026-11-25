@@ -155,6 +155,9 @@ func Settings(t aa.Task, home string) ([]byte, error) {
 // Prepare writes the session settings file before every spawn, so the file
 // is always DD's.
 func (a *Adapter) Prepare(t aa.Task) error {
+	if t.Role == aa.Chat {
+		return aa.ErrChatUnsupported
+	}
 	if a.cfg.Home == "" || !filepath.IsAbs(a.cfg.Home) {
 		return fmt.Errorf("antigravity: agy home %q is not an absolute path", a.cfg.Home)
 	}
@@ -181,6 +184,9 @@ func (a *Adapter) Command(t aa.Task) (aa.Command, error) {
 	}
 	if a.cfg.Home == "" {
 		return aa.Command{}, fmt.Errorf("antigravity: no agy home configured")
+	}
+	if t.Role == aa.Chat {
+		return aa.Command{}, aa.ErrChatUnsupported
 	}
 	args := []string{"-p", t.Prompt, "--output-format", "stream-json", "--sandbox", "--settings", SettingsPath(t)}
 	if t.Role == aa.Implementer {

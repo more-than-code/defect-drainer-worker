@@ -318,6 +318,9 @@ type CodingAgentOpts struct {
 	GrokTools             string
 	// Prompt, when set, replaces the batch-fix prompt. Empty keeps today's text.
 	Prompt string
+	// PromptSuffix is appended to the prompt sent, first or continue (job
+	// messages: MESSAGES.md and the inbox). Empty changes nothing.
+	PromptSuffix string
 	// ContinuePrompt, when set, replaces ContinuePrompt on -c / -r. Empty
 	// keeps the batch-fix continue prompt.
 	ContinuePrompt string
@@ -841,6 +844,9 @@ func StartCodingAgent(handoffAbs, batchID, defectsRoot string, worktrees []Workt
 		task.GrokBypassPermissions = opts.GrokBypassPermissions
 		task.GrokTools = opts.GrokTools
 	}
+	if opts != nil && opts.PromptSuffix != "" {
+		task.Prompt += "\n\n" + opts.PromptSuffix
+	}
 	for _, w := range worktrees {
 		task.Worktrees = append(task.Worktrees, w.WorktreeAbs)
 	}
@@ -994,6 +1000,11 @@ type ReviewAgentOpts struct {
 	StateDir   string
 	DenyRead   []string
 	DenyWrite  []string
+	// Chat makes this a follow-up answer (agentadapter.Chat): Cwd is the
+	// job's handoff and ResumeID the implementer's session, which it
+	// resumes read-only. A reviewer leaves both unset.
+	Chat     bool
+	ResumeID string
 	// Register runs after Start and before Wait so the caller can publish the
 	// process. The returned func is the single Wait — pass spawnedProc.reap,
 	// because Cmd.Wait must not run twice. Nil uses Cmd.Wait.
@@ -1041,8 +1052,16 @@ func StartReviewAgent(opts ReviewAgentOpts) (ReviewResult, error) {
 	}
 	// Fresh process: the adapter's reviewer argv never resumes, and its
 	// sandbox and permissions are read-only.
+	role := agentadapter.Reviewer
+	if opts.Chat {
+		if opts.ResumeID == "" {
+			return ReviewResult{}, fmt.Errorf("chat run has no session to resume")
+		}
+		role = agentadapter.Chat
+	}
 	task := agentadapter.Task{
-		Role:       agentadapter.Reviewer,
+		Role:       role,
+		ResumeID:   opts.ResumeID,
 		Handoff:    opts.Cwd,
 		Worktrees:  opts.Worktrees,
 		ReadOnly:   opts.ReadOnly,

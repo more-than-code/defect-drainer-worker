@@ -77,6 +77,8 @@ func (j *job) launch(d decision, leaseID string) {
 	}
 	j.gen++
 	gen := j.gen
+	// Messages a previous run never took are the server's to resend (§20).
+	j.inbox, j.interrupt = nil, false
 	j.live = true
 	j.cancelled = false
 	j.doneSpooled = false
@@ -206,6 +208,16 @@ func (j *job) setup(ctx context.Context, in exec.JobSpec) (exec.JobSpec, error) 
 		wts = append(wts, b)
 	}
 	spec.Worktrees = wts
+	if spec.Chat != nil {
+		j.mu.Lock()
+		tok := j.token
+		j.mu.Unlock()
+		msgs, err := w.fetchMessageImages(ctx, j.id, tok, spec.Chat.Messages)
+		if err != nil {
+			return spec, fmt.Errorf("%s: %v", workerproto.CodeInternal, err)
+		}
+		spec.Chat.Messages = msgs
+	}
 	if spec.VerifySubmitted() {
 		if err := j.cutBaselines(&spec); err != nil {
 			return spec, err

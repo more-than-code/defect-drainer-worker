@@ -21,7 +21,8 @@ import (
 // without running it again; a new one runs once, is stored, then sent.
 func (w *Worker) handleControl(ctx context.Context, f workerproto.Control) {
 	switch f.Control.Kind {
-	case exec.ControlCancel, exec.ControlResume, exec.ControlShipPreview, exec.ControlDiff, exec.ControlShip, exec.ControlDiscard:
+	case exec.ControlCancel, exec.ControlResume, exec.ControlShipPreview, exec.ControlDiff, exec.ControlShip, exec.ControlDiscard,
+		exec.ControlMessage, exec.ControlInterrupt:
 	default:
 		w.sendError(workerproto.CodeBadFrame, workerproto.TypeControl, "unknown control.kind")
 		return
@@ -119,6 +120,8 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 	case exec.ControlCancel:
 		j.cancelRun()
 		return ok(nil)
+	case exec.ControlMessage, exec.ControlInterrupt:
+		return w.takeMessages(ctx, j, f)
 	case exec.ControlResume:
 		w.reloadHostFiles()
 		if live {
@@ -146,6 +149,19 @@ func (w *Worker) runControl(ctx context.Context, j *job, f workerproto.Control) 
 		d := w.applyPolicy(spec, "", "", meta.Adapter)
 		if d.reason != "" {
 			return fail(d.reason, d.detail)
+		}
+		if spec.IsChat() {
+			// A chat run answers from the job's own worktrees: never cut
+			// fresh ones (§20).
+			for _, b := range spec.Worktrees {
+				p, err := w.opts.Paths.Worktree(f.JobID, b.Repo)
+				if err != nil {
+					return fail(workerproto.DeclineBadSpec, err.Error())
+				}
+				if _, err := os.Stat(p); err != nil {
+					return fail(workerproto.DeclineBadSpec, "worktrees discarded: "+b.Repo)
+				}
+			}
 		}
 		st := d.host.check(ctx, w.opts.Paths, w.secretsNow().DenySet(d.host.keep(), nil))
 		w.updateStatus(st)

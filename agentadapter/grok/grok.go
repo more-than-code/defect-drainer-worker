@@ -67,6 +67,9 @@ func (a *Adapter) Command(t aa.Task) (aa.Command, error) {
 	if t.Role == aa.Reviewer {
 		return a.reviewer(t), nil
 	}
+	if t.Role == aa.Chat {
+		return aa.Command{}, aa.ErrChatUnsupported
+	}
 	sandboxArg := t.Sandbox
 	if t.SandboxProfile != "" {
 		sandboxArg = t.SandboxProfile

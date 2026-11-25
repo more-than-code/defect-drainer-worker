@@ -78,6 +78,11 @@ type job struct {
 	// gitTokens are this job's minted GitHub tokens (§14), keyed repo+access.
 	// Memory only: never in job.json, the spool or a result.
 	gitTokens map[string]cachedGitToken
+	// inbox holds people's messages until the run takes them; interrupt is
+	// a pending Send now; msgSig wakes a run waiting for an answer (§20).
+	inbox     []exec.InboxMessage
+	interrupt bool
+	msgSig    chan struct{}
 }
 
 func spoolID(seq int64) string { return fmt.Sprintf("p%019d", seq) }
@@ -104,7 +109,7 @@ func (w *Worker) openJob(meta jobMeta) (*job, error) {
 	if meta.NextSeq < 1 {
 		meta.NextSeq = 1
 	}
-	j := &job{w: w, id: meta.JobID, sp: sp, meta: meta}
+	j := &job{w: w, id: meta.JobID, sp: sp, meta: meta, msgSig: make(chan struct{}, 1)}
 	j.ctx, j.cancel = context.WithCancel(context.Background())
 	items, err := sp.List()
 	if err != nil {

@@ -437,7 +437,7 @@ func (w *Worker) helloFrame() workerproto.Hello {
 // capabilities are this worker's: verify_sandbox.v1 only while the
 // verify sandbox's self-test passes (V9).
 func capabilities(v verifyState) []string {
-	caps := []string{workerproto.CapBlobsV1, workerproto.CapGitTokenV1, workerproto.CapBrowserV1, workerproto.CapVerifySubmittedV1, workerproto.CapJobStackV1, workerproto.CapProjectKeysV1, workerproto.CapSigninRandomV1}
+	caps := []string{workerproto.CapBlobsV1, workerproto.CapGitTokenV1, workerproto.CapBrowserV1, workerproto.CapVerifySubmittedV1, workerproto.CapJobStackV1, workerproto.CapProjectKeysV1, workerproto.CapSigninRandomV1, workerproto.CapJobMessagesV1}
 	if v.err == nil {
 		caps = append(caps, workerproto.CapVerifySandboxV1)
 	}
