@@ -105,6 +105,53 @@ func NotesMarkers(handoff string, defectIDs []string, cutoff time.Time) (unfixed
 	return unfixed, noShot, true
 }
 
+// NoVisualReasonLimit bounds a NO-VISUAL reason, like MCP's no_visual_reason.
+const NoVisualReasonLimit = 500
+
+// NoVisualClaims reads the NO-VISUAL markers in NOTES.md: a full line
+// "NO-VISUAL: <id>" claims the fix has nothing visible to show, and the next
+// non-blank line is the reason. A marker with no reason, or whose next line is
+// another marker, claims nothing. A missing or unreadable NOTES.md claims
+// nothing, the fail-closed direction.
+func NoVisualClaims(handoff string, defectIDs []string, cutoff time.Time) map[string]string {
+	out := map[string]string{}
+	data, _, ok := ReadRegularFile(handoff, filepath.Join(handoff, "NOTES.md"), cutoff)
+	if !ok {
+		return out
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		for _, id := range defectIDs {
+			if !markerLine(line, "NO-VISUAL", id) {
+				continue
+			}
+			for _, next := range lines[i+1:] {
+				next = strings.TrimSpace(next)
+				if next == "" {
+					continue
+				}
+				if !isMarkerText(next) {
+					if reason := briefField(next, NoVisualReasonLimit); reason != "" {
+						out[id] = reason
+					}
+				}
+				break
+			}
+		}
+	}
+	return out
+}
+
+// isMarkerText is a line that starts one of NOTES.md's markers.
+func isMarkerText(line string) bool {
+	for _, m := range []string{"UNFIXED:", "NO-SCREENSHOT:", "NO-VISUAL:", "BLOCKED:"} {
+		if strings.HasPrefix(line, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // NotesForHarvest separates a missing NOTES.md from one the reader refuses.
 // Missing means no markers. Present but unreadable (too large, a symlink, a
 // hardlink, another device) must not look like an empty decline list.
@@ -167,6 +214,7 @@ func ArtifactsComplete(handoff string, defectIDs []string, sandbox string, cutof
 		return false, []string{"job has no defect ids"}
 	}
 	unfixed, noShot, notesOK := NotesMarkers(handoff, defectIDs, cutoff)
+	noVisual := NoVisualClaims(handoff, defectIDs, cutoff)
 	var missing []string
 	if !notesOK {
 		missing = append(missing, "NOTES.md")
@@ -180,6 +228,11 @@ func ArtifactsComplete(handoff string, defectIDs []string, sandbox string, cutof
 			missing = append(missing, "fix-notes/"+id+".md")
 		}
 		if hasHarvestableImage(handoff, filepath.Join(handoff, "fix-evidence", id), cutoff) {
+			continue
+		}
+		// A fix with nothing visible to show, with its reason: harvest sends
+		// the claim and the control plane decides on it with the review.
+		if noVisual[id] != "" {
 			continue
 		}
 		// A strict sandbox genuinely cannot screenshot, so an explicit marker

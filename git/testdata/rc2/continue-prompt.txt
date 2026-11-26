@@ -1,4 +1,6 @@
 Continue executing BRIEF.md and PROCESS.md. Resume where you left off.
+Re-read BRIEF.md first: on a Re-run or Resume its "Earlier run" section
+points at LAST-RUN.md, the last run's failed checks and review findings.
 Do not stop early. Required artifacts (exact; Defect Drainer matches these, not prose):
 - NOTES.md
 - for each defect you claim fixed: fix-notes/<DEF-id>.md AND
@@ -7,6 +9,9 @@ Do not stop early. Required artifacts (exact; Defect Drainer matches these, not 
 - if the sandbox is strict and you cannot screenshot, a full line:
   NO-SCREENSHOT: <DEF-id>
   (that stops the loop only; harvest will not resolve without a new image)
+- if the fix has nothing visible to show, a full line:
+  NO-VISUAL: <DEF-id>
+  with the reason on the next line (it takes the place of the image)
 - if something outside your control blocks the work, a full line:
   BLOCKED: <reason>
   (that stops the loop; delete the line once the blocker is gone)

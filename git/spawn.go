@@ -247,6 +247,8 @@ type AgentEnd = agentadapter.End
 // model-authored: the worker may not widen its own completion contract, and the
 // marker spellings here are the ones exec.ArtifactsComplete matches exactly.
 const ContinuePrompt = `Continue executing BRIEF.md and PROCESS.md. Resume where you left off.
+Re-read BRIEF.md first: on a Re-run or Resume its "Earlier run" section
+points at LAST-RUN.md, the last run's failed checks and review findings.
 Do not stop early. Required artifacts (exact; Defect Drainer matches these, not prose):
 - NOTES.md
 - for each defect you claim fixed: fix-notes/<DEF-id>.md AND
@@ -255,6 +257,9 @@ Do not stop early. Required artifacts (exact; Defect Drainer matches these, not 
 - if the sandbox is strict and you cannot screenshot, a full line:
   NO-SCREENSHOT: <DEF-id>
   (that stops the loop only; harvest will not resolve without a new image)
+- if the fix has nothing visible to show, a full line:
+  NO-VISUAL: <DEF-id>
+  with the reason on the next line (it takes the place of the image)
 - if something outside your control blocks the work, a full line:
   BLOCKED: <reason>
   (that stops the loop; delete the line once the blocker is gone)
@@ -265,6 +270,8 @@ Do not invent other marker spellings. Do not delegate onward.`
 // (worker-browser B6): screenshots come from dd-shot, and NO-SCREENSHOT is
 // for a dd-shot failure or an app without a preview only.
 const ContinuePromptBrowser = `Continue executing BRIEF.md and PROCESS.md. Resume where you left off.
+Re-read BRIEF.md first: on a Re-run or Resume its "Earlier run" section
+points at LAST-RUN.md, the last run's failed checks and review findings.
 Do not stop early. Required artifacts (exact; Defect Drainer matches these, not prose):
 - NOTES.md
 - for each defect you claim fixed: fix-notes/<DEF-id>.md AND
@@ -276,6 +283,9 @@ Do not stop early. Required artifacts (exact; Defect Drainer matches these, not 
   NO-SCREENSHOT: <DEF-id>
   with the DD-SHOT FAIL line dd-shot printed quoted under it
   (that stops the loop only; harvest will not resolve without a new image)
+- if the fix has nothing visible to show, a full line:
+  NO-VISUAL: <DEF-id>
+  with the reason on the next line (it takes the place of the image)
 - if something outside your control blocks the work, a full line:
   BLOCKED: <reason>
   (that stops the loop; delete the line once the blocker is gone)

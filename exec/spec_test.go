@@ -107,7 +107,7 @@ func fullEvents() []Event {
 		{Kind: EventReview, JobID: "bjob_1", Lines: lines, Review: fullReview()},
 		{Kind: EventHarvest, JobID: "bjob_1", Lines: lines, Harvest: &FixHarvest{
 			Defects: []HarvestedDefect{{DefectID: "DEF-1", Images: []HarvestFile{{Filename: "a.png", Data: []byte{0x89, 'P', 'N', 'G', 0}, SHA256: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0", Size: 5}},
-				OversizedImages: []string{"big.png"}, Note: "fixed", OversizedNotes: []string{"/h/fix-notes/DEF-1.md"}, NoteSHA256: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0", NoteSize: 5}},
+				OversizedImages: []string{"big.png"}, Note: "fixed", OversizedNotes: []string{"/h/fix-notes/DEF-1.md"}, NoteSHA256: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0", NoteSize: 5, NoVisual: "api guard"}},
 			Unfixed: map[string]bool{"DEF-2": true}, NotesUnreadable: true, AllowResolve: true,
 			Verification: fullVerification(), Review: fullReview(),
 		}},

@@ -76,6 +76,11 @@ func TestEndToEndFixJob(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(h.paths.Handoff("bjob_e2e1"), "BRIEF.md")); err != nil {
 		t.Fatalf("handoff not at the worker path: %v", err)
 	}
+	// A later Re-run or Resume reads the last run's checks and review (toyg).
+	last, err := os.ReadFile(filepath.Join(h.paths.Handoff("bjob_e2e1"), dexec.LastRunFile))
+	if err != nil || !strings.Contains(string(last), "## Verification") || !strings.Contains(string(last), "## Review") {
+		t.Fatalf("LAST-RUN.md = %q, %v", last, err)
+	}
 	// Once done is acked the spool is empty and the job is no longer busy.
 	eventually(t, 5*time.Second, "spool drained", func() bool {
 		items, _ := os.ReadDir(filepath.Join(h.paths.SpoolRoot("bjob_e2e1"), "spool"))

@@ -33,6 +33,7 @@ func (j *job) prepare(ctx context.Context, e exec.Event) exec.Event {
 		for i := range h.Defects {
 			d := &h.Defects[i]
 			d.Images = j.blobImages(ctx, d.Images, &notes)
+			d.NoVisual = r.Values(d.NoVisual)
 			if d.Note != "" {
 				d.Note = r.Values(d.Note)
 				if len(d.Note) > workerproto.NoteBlobAbove {

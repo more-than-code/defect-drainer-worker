@@ -177,7 +177,8 @@ func (r *run) writeHandoff() error {
 	if r.sink.Gone() {
 		return nil
 	}
-	in := BatchFixBriefInput{DefectsRoot: s.DefectsRoot, GrokSandbox: s.Project.Sandbox, Worktrees: s.Worktrees}
+	in := BatchFixBriefInput{DefectsRoot: s.DefectsRoot, GrokSandbox: s.Project.Sandbox, Worktrees: s.Worktrees,
+		EarlierRun: s.Mode == ModeRerun || s.Mode == ModeResume}
 	// Only Claude's settings carry the host's network allow list.
 	if r.host.AgentAdapter().Name() == agentadapter.Claude {
 		in.AllowedDomains = r.host.AllowedDomains
@@ -932,6 +933,13 @@ func (r *run) afterFixLoop(fin loopFinish, log func(line, level string)) {
 	if r.sink.Cancelled() {
 		return
 	}
+	// A Re-run or Resume reads this first (toyg): the last run's checks and
+	// review findings, which otherwise reach only the control plane.
+	if !s.VerifySubmitted() {
+		if err := WriteHandoffFile(fin.handoff, LastRunFile, []byte(BuildLastRunMD(harvest.Verification, rev, fin.failed)), 0o644); err != nil {
+			log("LAST-RUN.md not written: "+err.Error(), "warn")
+		}
+	}
 	collected := CollectFixHarvest(fin.handoff, s.DefectIDs, s.HarvestIDs, r.harvestCutoff(), r.importCutoff())
 	harvest.Defects = collected.Defects
 	harvest.Unfixed = collected.Unfixed
@@ -998,13 +1006,14 @@ func CollectFixHarvest(handoff string, defectIDs, harvestIDs []string, cutoff, i
 	notesRoot := filepath.Join(handoff, "fix-notes")
 	out := CollectedFix{}
 	out.Unfixed, out.NotesUnreadable = NotesForHarvest(handoff, defectIDs, cutoff)
+	noVisual := NoVisualClaims(handoff, defectIDs, cutoff)
 	for _, defectID := range harvestIDs {
 		// The orchestrator sends checked ids; a path-shaped one is refused
 		// here too, so a spec from the wire cannot steer a directory read.
 		if !safePathID(defectID) {
 			continue
 		}
-		d := HarvestedDefect{DefectID: defectID}
+		d := HarvestedDefect{DefectID: defectID, NoVisual: noVisual[defectID]}
 		imgDir := filepath.Join(fixRoot, defectID)
 		if ents, err := os.ReadDir(imgDir); err == nil && IsRealDir(imgDir) {
 			for _, e := range ents {

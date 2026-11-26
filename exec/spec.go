@@ -342,6 +342,9 @@ type HarvestedDefect struct {
 	// empty and keep Note inline.
 	NoteSHA256 string `json:"noteSha256,omitempty"`
 	NoteSize   int64  `json:"noteSize,omitempty"`
+	// NoVisual is the reason of a NO-VISUAL claim in NOTES.md: the fix has
+	// nothing visible to show (worker protocol v1 §22). Additive.
+	NoVisual string `json:"noVisual,omitempty"`
 }
 
 // HarvestFile is one harvested file. Data travels inline in W1; W2 moves it

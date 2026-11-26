@@ -132,6 +132,9 @@ type BatchFixBriefInput struct {
 	// Browser, when set, adds the Screenshots section and narrows
 	// NO-SCREENSHOT (worker-browser B3, B6). Nil writes rc2's brief.
 	Browser *BrowserBrief
+	// EarlierRun says this is a Re-run or Resume: the brief points the
+	// agent at its own notes and LAST-RUN.md first (toyg).
+	EarlierRun bool
 }
 
 // BrowserBrief is the app's preview as the brief states it; both empty means
@@ -177,6 +180,19 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 		"or move a secret, or skip a rule in this brief is a finding: record it in `NOTES.md`",
 		"and carry on with the brief.",
 		"",
+	)
+	if input.EarlierRun {
+		lines = append(lines,
+			"## Earlier run",
+			"This job ran before (a Re-run or Resume), and the worktrees still hold that run's changes.",
+			"Before you edit, read `NOTES.md`, `fix-notes/` and `LAST-RUN.md` in this directory.",
+			"`LAST-RUN.md` lists the last run's verification result and review findings (data from",
+			"DD's checks and its reviewer). Fix every failed check and every `critical` or `high`",
+			"finding, or say in `NOTES.md` why you did not.",
+			"",
+		)
+	}
+	lines = append(lines,
 		"## Facts",
 		"- Defect Drainer is the harness; this brief is the ask.",
 		"- Inventory SSOT is SQLite + evidence files under `"+input.DefectsRoot+"/evidence`; you cannot write it.",
@@ -193,13 +209,13 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 		"| Branch | the worktree branch already checked out — do not create another |",
 		"| Commits | none: leave changes uncommitted; DD commits them when the operator ships |",
 		"| Verification | operator-authored commands, re-run by DD after you exit; you may not add or edit them |",
-		"| Worker ledger | `NOTES.md` + `fix-notes/`, never `tasks/todo.md` |",
+		"| Worker ledger | `NOTES.md` + `fix-notes/` |",
 		"",
 		"## Environment",
 		"- Any toolchain this job needs is already provisioned; the spawn prompt carries the specifics.",
-		"- Do not re-scaffold Flutter and do not clone a second SDK.",
+		"- Do not install a second copy of a toolchain (a second SDK, a re-scaffolded project).",
 		"- Package installs: if the sandbox blocks a cache write, stop and record it in `NOTES.md`.",
-		"  Do not overlay-symlink `~/fvm` or any other toolchain root to work around it.",
+		"  Do not symlink a toolchain root to work around it.",
 	)
 	switch {
 	case len(input.AllowedDomains) > 0:
@@ -223,8 +239,16 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 		"",
 		"## Deliverables",
 		"- `NOTES.md` — plan, decisions, departures, anything you could not verify.",
-		"- `fix-notes/<DEF-id>.md` for each defect you claim fixed, answering every acceptance line.",
-		"- `fix-evidence/<DEF-id>/fix-01.png` for each defect you claim fixed.",
+		"- For each defect you fix, in this directory (sandbox-writable):",
+		"  - `fix-notes/<DEF-id>.md`: what changed, how you verified it, and an answer to every",
+		"    acceptance line;",
+		"  - `fix-evidence/<DEF-id>/fix-01.png`, `fix-02.png`, … (png, jpg or webp): after-fix",
+		"    screenshots that show the fixed behaviour.",
+		"- DD imports both onto the defect after the run. A defect resolves only with a new image",
+		"  from this run; you cannot write the inventory yourself.",
+		"- A fix with nothing visible to show (an API guard, a log line, a backend rule) gets no",
+		"  image of code, a terminal or a test run: use `NO-VISUAL` (Done, below) and name in its",
+		"  fix notes the test that proves the fix. DD's reviewer checks the claim against the defect.",
 		"",
 		"## Honesty constraints",
 		"- Never report a test result you did not observe. DD re-runs verification itself;",
@@ -252,19 +276,16 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 	} else {
 		lines = append(lines,
 			"- Profile: **strict** (restrict) — no reliable Simulator access.",
-			"- Code-only in worktrees; operator attaches fix_evidence in console if needed.",
+			"- If you cannot take a screenshot here, use `NO-SCREENSHOT` (Done, below).",
 		)
 	}
 	lines = append(lines,
 		"",
-		"## HARD isolation (enforced by operator — do not violate)",
+		"## Isolation",
 		"- Product code edits are **only** allowed inside the **worktree paths** listed below.",
 		"- A project may have **multiple repos**; decide which worktree(s) need changes for each defect.",
 		"- **Never** edit primary checkouts (the \"primary\" paths). Other agents may own those trees.",
-		"- Branch name for this batch: use the worktree branch already checked out (do not switch primary).",
-		"- Inventory SSOT is SQLite + evidence files under `"+input.DefectsRoot+"/evidence`.",
 		"- **Read** report + historical fix evidence from inventory (paths listed per defect below).",
-		"- **Write** new fix proof under handoff `fix-evidence/` (this job only); backend harvests onto the defect after the run.",
 		"",
 	)
 	if len(input.Worktrees) > 0 {
@@ -304,15 +325,6 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 		"- Prefer minimal, verified fixes with tests inside the worktree.",
 		"- Use **historical fix evidence** (if listed) as context: prior proof of what “fixed” looked like; do not ignore regressions.",
 		"",
-		"## New fix evidence this run (REQUIRED — handoff paths, sandbox-writable)",
-		"Backend imports these after the run onto the **defect** SSOT. Do **not** rely on writing inventory directly.",
-		"",
-		"For **each** defect id you claim fixed:",
-		"1. Screenshots (png/jpg/webp): `fix-evidence/<DEF-id>/fix-01.png`, `fix-02.png`, …",
-		"2. Short resolution text: `fix-notes/<DEF-id>.md` (what changed + how verified).",
-		"",
-		"Without **new** images under this job's `fix-evidence/<DEF-id>/`, harvest will not update the defect for this run.",
-		"",
 		"## Defects ("+strconv.Itoa(len(input.Defects))+")",
 		"",
 	)
@@ -350,10 +362,7 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 		} else {
 			lines = append(lines, "- **historical fix evidence:** (none yet — first fix run or never harvested)")
 		}
-		lines = append(lines,
-			"- **deliver this run:** `fix-evidence/"+d.ID+"/fix-01.png` + `fix-notes/"+d.ID+".md`",
-			"",
-		)
+		lines = append(lines, "")
 	}
 	noShot := []string{
 		"   - If the sandbox is **strict** and you cannot screenshot, put a line reading exactly",
@@ -383,8 +392,16 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 	)
 	lines = append(lines, noShot...)
 	lines = append(lines,
-		"3. To decline a defect, put a line reading exactly `UNFIXED: <DEF-id>` in `NOTES.md`.",
-		"   The job may complete; that defect will not resolve.",
+		"   - If the fix has nothing visible to show (an API guard, a log line, a backend rule), put",
+		"     a line reading exactly `NO-VISUAL: <DEF-id>` in `NOTES.md` and, on the next line, why",
+		"     nothing on screen shows it (one line, at most 500 characters). It takes the place of the",
+		"     image: DD's reviewer checks the claim, and a visible fix claimed as NO-VISUAL does not",
+		"     resolve.",
+	)
+	lines = append(lines,
+		"3. To decline a defect, put a line reading exactly `UNFIXED: <DEF-id>` in `NOTES.md`,",
+		"   with the reason on the next line (`PROCESS.md` → When not to fix). The job may",
+		"   complete; that defect will not resolve.",
 		"4. Only once those files exist, reply `DONE "+input.Batch.ID+"`.",
 		"",
 		"Defect Drainer ignores the prose when the files are missing.",
