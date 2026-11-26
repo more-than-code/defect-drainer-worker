@@ -272,6 +272,11 @@ func BuildReviewMD(lens, brief string, wts []git.WorktreeBinding, diffBase map[s
 	b.WriteString("- `high`: the defect is not fixed, a test was weakened or deleted to pass, behaviour broke elsewhere, or the diff holds work that is not the fix.\n")
 	b.WriteString("- `medium`: a real problem that does not stop the fix from working, such as a missing test or an unhandled error path.\n")
 	b.WriteString("- `low`: style, naming or a small cleanup.\n")
+	b.WriteString("\n## No visual change\n\n")
+	b.WriteString("A line `NO-VISUAL: <DEF-id>` in NOTES.md claims that defect's fix has nothing visible to show,\n")
+	b.WriteString("with the reason on the next line; the claim takes the place of an after-fix screenshot. Check it\n")
+	b.WriteString("against the defect and the diff: if the defect or the change shows in the UI, or no test in the\n")
+	b.WriteString("diff proves the fix, report a `high` finding with that `defect_id`.\n")
 	b.WriteString("\n## Facts\n\n")
 	fmt.Fprintf(&b, "Acceptance criteria are in `%s` (read-only).\n\n", brief)
 	if len(defectIDs) == 0 {
@@ -330,8 +335,7 @@ func lensBlurb(lens string) string {
 		return "Spec conformance: does the diff and the fix-notes meet every acceptance criterion in BRIEF.md?\n" +
 			"Open each after-fix image in `fix-evidence/<DEF-id>/`: it must show the fixed behaviour on the\n" +
 			"defect's surface. An unrelated page, an error page, an unchanged page, or an image of code or a\n" +
-			"terminal passed off as the fix is a `high` finding. A `NO-SCREENSHOT` defect must say in its\n" +
-			"fix-notes why nothing is visible and which test proves it."
+			"terminal passed off as the fix is a `high` finding."
 	case "security":
 		return "Security: secrets, injection, authentication, authorization, and unsafe paths."
 	case "code":

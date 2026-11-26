@@ -1006,13 +1006,14 @@ func CollectFixHarvest(handoff string, defectIDs, harvestIDs []string, cutoff, i
 	notesRoot := filepath.Join(handoff, "fix-notes")
 	out := CollectedFix{}
 	out.Unfixed, out.NotesUnreadable = NotesForHarvest(handoff, defectIDs, cutoff)
+	noVisual := NoVisualClaims(handoff, defectIDs, cutoff)
 	for _, defectID := range harvestIDs {
 		// The orchestrator sends checked ids; a path-shaped one is refused
 		// here too, so a spec from the wire cannot steer a directory read.
 		if !safePathID(defectID) {
 			continue
 		}
-		d := HarvestedDefect{DefectID: defectID}
+		d := HarvestedDefect{DefectID: defectID, NoVisual: noVisual[defectID]}
 		imgDir := filepath.Join(fixRoot, defectID)
 		if ents, err := os.ReadDir(imgDir); err == nil && IsRealDir(imgDir) {
 			for _, e := range ents {

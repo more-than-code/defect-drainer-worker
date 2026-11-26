@@ -254,10 +254,12 @@ Do not stop early. Required artifacts (exact; Defect Drainer matches these, not 
 - for each defect you claim fixed: fix-notes/<DEF-id>.md AND
   fix-evidence/<DEF-id>/fix-01.png
 - to decline a defect, a full line in NOTES.md: UNFIXED: <DEF-id>
-- if the sandbox is strict and you cannot screenshot, or the fix has
-  nothing visible to show, a full line:
+- if the sandbox is strict and you cannot screenshot, a full line:
   NO-SCREENSHOT: <DEF-id>
   (that stops the loop only; harvest will not resolve without a new image)
+- if the fix has nothing visible to show, a full line:
+  NO-VISUAL: <DEF-id>
+  with the reason on the next line (it takes the place of the image)
 - if something outside your control blocks the work, a full line:
   BLOCKED: <reason>
   (that stops the loop; delete the line once the blocker is gone)
@@ -277,12 +279,13 @@ Do not stop early. Required artifacts (exact; Defect Drainer matches these, not 
 - take after-fix screenshots with: sh dd-shot <DEF-id> <path> [<path>...]
   (from cwd, in ONE Bash call; it serves the app and stops it again)
 - to decline a defect, a full line in NOTES.md: UNFIXED: <DEF-id>
-- only if dd-shot failed, BRIEF.md says the app has no preview, or the fix
-  has nothing visible to show, a full line:
+- only if dd-shot failed, or BRIEF.md says the app has no preview, a full line:
   NO-SCREENSHOT: <DEF-id>
-  with the DD-SHOT FAIL line dd-shot printed (or why nothing is visible)
-  quoted under it
+  with the DD-SHOT FAIL line dd-shot printed quoted under it
   (that stops the loop only; harvest will not resolve without a new image)
+- if the fix has nothing visible to show, a full line:
+  NO-VISUAL: <DEF-id>
+  with the reason on the next line (it takes the place of the image)
 - if something outside your control blocks the work, a full line:
   BLOCKED: <reason>
   (that stops the loop; delete the line once the blocker is gone)

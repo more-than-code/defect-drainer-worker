@@ -247,8 +247,8 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 		"- DD imports both onto the defect after the run. A defect resolves only with a new image",
 		"  from this run; you cannot write the inventory yourself.",
 		"- A fix with nothing visible to show (an API guard, a log line, a backend rule) gets no",
-		"  image of code, a terminal or a test run: use `NO-SCREENSHOT` (Done, below) and say in its",
-		"  fix notes why there is nothing to show and which test proves the fix.",
+		"  image of code, a terminal or a test run: use `NO-VISUAL` (Done, below) and name in its",
+		"  fix notes the test that proves the fix. DD's reviewer checks the claim against the defect.",
 		"",
 		"## Honesty constraints",
 		"- Never report a test result you did not observe. DD re-runs verification itself;",
@@ -365,9 +365,9 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 		lines = append(lines, "")
 	}
 	noShot := []string{
-		"   - If the sandbox is **strict** and you cannot screenshot, or the fix has nothing visible",
-		"     to show, put a line reading exactly `NO-SCREENSHOT: <DEF-id>` in `NOTES.md`. That",
-		"     releases the run only — the defect still will not resolve without a new image.",
+		"   - If the sandbox is **strict** and you cannot screenshot, put a line reading exactly",
+		"     `NO-SCREENSHOT: <DEF-id>` in `NOTES.md`. That releases the run only — the defect",
+		"     still will not resolve without a new image.",
 	}
 	if input.Browser != nil {
 		if input.Browser.Stack != nil {
@@ -375,10 +375,10 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 		}
 		lines = append(lines, browserBriefSection(*input.Browser)...)
 		noShot = []string{
-			"   - Only if `dd-shot` failed, this brief says the app has no preview, or the fix has",
-			"     nothing visible to show, put a line reading exactly `NO-SCREENSHOT: <DEF-id>` in",
-			"     `NOTES.md`, with the `DD-SHOT FAIL` line (or why nothing is visible) quoted under it.",
-			"     That releases the run only — the defect still will not resolve without a new image.",
+			"   - Only if `dd-shot` failed, or this brief says the app has no preview, put a line",
+			"     reading exactly `NO-SCREENSHOT: <DEF-id>` in `NOTES.md`, with the `DD-SHOT FAIL`",
+			"     line quoted under it. That releases the run only — the defect still will not",
+			"     resolve without a new image.",
 		}
 	}
 	lines = append(lines,
@@ -391,6 +391,13 @@ func BuildBatchFixBrief(input BatchFixBriefInput) string {
 		"   - `fix-evidence/<DEF-id>/fix-01.png`.",
 	)
 	lines = append(lines, noShot...)
+	lines = append(lines,
+		"   - If the fix has nothing visible to show (an API guard, a log line, a backend rule), put",
+		"     a line reading exactly `NO-VISUAL: <DEF-id>` in `NOTES.md` and, on the next line, why",
+		"     nothing on screen shows it (one line, at most 500 characters). It takes the place of the",
+		"     image: DD's reviewer checks the claim, and a visible fix claimed as NO-VISUAL does not",
+		"     resolve.",
+	)
 	lines = append(lines,
 		"3. To decline a defect, put a line reading exactly `UNFIXED: <DEF-id>` in `NOTES.md`,",
 		"   with the reason on the next line (`PROCESS.md` → When not to fix). The job may",

@@ -59,8 +59,8 @@ Do not retry around the blocker. Delete the line once it is gone.
 - DD imports both onto the defect after the run. A defect resolves only with a new image
   from this run; you cannot write the inventory yourself.
 - A fix with nothing visible to show (an API guard, a log line, a backend rule) gets no
-  image of code, a terminal or a test run: use `NO-SCREENSHOT` (Done, below) and say in its
-  fix notes why there is nothing to show and which test proves the fix.
+  image of code, a terminal or a test run: use `NO-VISUAL` (Done, below) and name in its
+  fix notes the test that proves the fix. DD's reviewer checks the claim against the defect.
 
 ## Honesty constraints
 - Never report a test result you did not observe. DD re-runs verification itself;
@@ -116,9 +116,14 @@ Completion is measured in **files**, not prose.
 2. For each defect you claim fixed:
    - `fix-notes/<DEF-id>.md` answering every acceptance criterion, and
    - `fix-evidence/<DEF-id>/fix-01.png`.
-   - If the sandbox is **strict** and you cannot screenshot, or the fix has nothing visible
-     to show, put a line reading exactly `NO-SCREENSHOT: <DEF-id>` in `NOTES.md`. That
-     releases the run only — the defect still will not resolve without a new image.
+   - If the sandbox is **strict** and you cannot screenshot, put a line reading exactly
+     `NO-SCREENSHOT: <DEF-id>` in `NOTES.md`. That releases the run only — the defect
+     still will not resolve without a new image.
+   - If the fix has nothing visible to show (an API guard, a log line, a backend rule), put
+     a line reading exactly `NO-VISUAL: <DEF-id>` in `NOTES.md` and, on the next line, why
+     nothing on screen shows it (one line, at most 500 characters). It takes the place of the
+     image: DD's reviewer checks the claim, and a visible fix claimed as NO-VISUAL does not
+     resolve.
 3. To decline a defect, put a line reading exactly `UNFIXED: <DEF-id>` in `NOTES.md`,
    with the reason on the next line (`PROCESS.md` → When not to fix). The job may
    complete; that defect will not resolve.
