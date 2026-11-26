@@ -177,7 +177,8 @@ func (r *run) writeHandoff() error {
 	if r.sink.Gone() {
 		return nil
 	}
-	in := BatchFixBriefInput{DefectsRoot: s.DefectsRoot, GrokSandbox: s.Project.Sandbox, Worktrees: s.Worktrees}
+	in := BatchFixBriefInput{DefectsRoot: s.DefectsRoot, GrokSandbox: s.Project.Sandbox, Worktrees: s.Worktrees,
+		EarlierRun: s.Mode == ModeRerun || s.Mode == ModeResume}
 	// Only Claude's settings carry the host's network allow list.
 	if r.host.AgentAdapter().Name() == agentadapter.Claude {
 		in.AllowedDomains = r.host.AllowedDomains
@@ -931,6 +932,13 @@ func (r *run) afterFixLoop(fin loopFinish, log func(line, level string)) {
 	}
 	if r.sink.Cancelled() {
 		return
+	}
+	// A Re-run or Resume reads this first (toyg): the last run's checks and
+	// review findings, which otherwise reach only the control plane.
+	if !s.VerifySubmitted() {
+		if err := WriteHandoffFile(fin.handoff, LastRunFile, []byte(BuildLastRunMD(harvest.Verification, rev, fin.failed)), 0o644); err != nil {
+			log("LAST-RUN.md not written: "+err.Error(), "warn")
+		}
 	}
 	collected := CollectFixHarvest(fin.handoff, s.DefectIDs, s.HarvestIDs, r.harvestCutoff(), r.importCutoff())
 	harvest.Defects = collected.Defects

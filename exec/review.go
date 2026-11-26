@@ -327,7 +327,11 @@ func BuildReviewMD(lens, brief string, wts []git.WorktreeBinding, diffBase map[s
 func lensBlurb(lens string) string {
 	switch lens {
 	case "spec":
-		return "Spec conformance: does the diff and the fix-notes meet every acceptance criterion in BRIEF.md?"
+		return "Spec conformance: does the diff and the fix-notes meet every acceptance criterion in BRIEF.md?\n" +
+			"Open each after-fix image in `fix-evidence/<DEF-id>/`: it must show the fixed behaviour on the\n" +
+			"defect's surface. An unrelated page, an error page, an unchanged page, or an image of code or a\n" +
+			"terminal passed off as the fix is a `high` finding. A `NO-SCREENSHOT` defect must say in its\n" +
+			"fix-notes why nothing is visible and which test proves it."
 	case "security":
 		return "Security: secrets, injection, authentication, authorization, and unsafe paths."
 	case "code":

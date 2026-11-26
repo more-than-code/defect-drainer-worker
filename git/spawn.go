@@ -247,12 +247,15 @@ type AgentEnd = agentadapter.End
 // model-authored: the worker may not widen its own completion contract, and the
 // marker spellings here are the ones exec.ArtifactsComplete matches exactly.
 const ContinuePrompt = `Continue executing BRIEF.md and PROCESS.md. Resume where you left off.
+Re-read BRIEF.md first: on a Re-run or Resume its "Earlier run" section
+points at LAST-RUN.md, the last run's failed checks and review findings.
 Do not stop early. Required artifacts (exact; Defect Drainer matches these, not prose):
 - NOTES.md
 - for each defect you claim fixed: fix-notes/<DEF-id>.md AND
   fix-evidence/<DEF-id>/fix-01.png
 - to decline a defect, a full line in NOTES.md: UNFIXED: <DEF-id>
-- if the sandbox is strict and you cannot screenshot, a full line:
+- if the sandbox is strict and you cannot screenshot, or the fix has
+  nothing visible to show, a full line:
   NO-SCREENSHOT: <DEF-id>
   (that stops the loop only; harvest will not resolve without a new image)
 - if something outside your control blocks the work, a full line:
@@ -265,6 +268,8 @@ Do not invent other marker spellings. Do not delegate onward.`
 // (worker-browser B6): screenshots come from dd-shot, and NO-SCREENSHOT is
 // for a dd-shot failure or an app without a preview only.
 const ContinuePromptBrowser = `Continue executing BRIEF.md and PROCESS.md. Resume where you left off.
+Re-read BRIEF.md first: on a Re-run or Resume its "Earlier run" section
+points at LAST-RUN.md, the last run's failed checks and review findings.
 Do not stop early. Required artifacts (exact; Defect Drainer matches these, not prose):
 - NOTES.md
 - for each defect you claim fixed: fix-notes/<DEF-id>.md AND
@@ -272,9 +277,11 @@ Do not stop early. Required artifacts (exact; Defect Drainer matches these, not 
 - take after-fix screenshots with: sh dd-shot <DEF-id> <path> [<path>...]
   (from cwd, in ONE Bash call; it serves the app and stops it again)
 - to decline a defect, a full line in NOTES.md: UNFIXED: <DEF-id>
-- only if dd-shot failed, or BRIEF.md says the app has no preview, a full line:
+- only if dd-shot failed, BRIEF.md says the app has no preview, or the fix
+  has nothing visible to show, a full line:
   NO-SCREENSHOT: <DEF-id>
-  with the DD-SHOT FAIL line dd-shot printed quoted under it
+  with the DD-SHOT FAIL line dd-shot printed (or why nothing is visible)
+  quoted under it
   (that stops the loop only; harvest will not resolve without a new image)
 - if something outside your control blocks the work, a full line:
   BLOCKED: <reason>
