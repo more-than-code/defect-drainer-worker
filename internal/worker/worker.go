@@ -86,6 +86,9 @@ type Options struct {
 	// (cgroup.Open; `dd-worker run` sets it). Nil: no per-job cgroups, as
 	// in tests, which must never move the test process.
 	Cgroups func() (*cgroup.Manager, error)
+	// SelfUpdateRootDir is where the root step writes result.json
+	// (tests; "": selfupdate.DefaultRootDir).
+	SelfUpdateRootDir string
 }
 
 // Worker is one dd-worker process.
@@ -109,8 +112,11 @@ type Worker struct {
 	// serverCaps are the capabilities of the current hello_ok.
 	serverCaps []string
 	envRefs    map[string]int // SecretEnv names set in this process
-	sock       *socket
-	revoked    bool
+	su         selfUpdateState
+	// suWG holds the self-update goroutines Run starts; Run waits for them.
+	suWG    sync.WaitGroup
+	sock    *socket
+	revoked bool
 
 	redactor redact.Exact
 
@@ -168,6 +174,7 @@ func New(opts Options) (*Worker, error) {
 	if err := w.recoverJobs(); err != nil {
 		return nil, err
 	}
+	w.initSelfUpdate()
 	return w, nil
 }
 

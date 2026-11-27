@@ -173,8 +173,9 @@ func (h *harness) launch(timing Timing) {
 		Adapters: AdapterConfig{ClaudeBin: h.agent, ClaudeConfigDir: filepath.Join(h.tmp, "claude-cfg"),
 			GrokBin: filepath.Join(h.tmp, "no-such", "grok"), AgyBin: filepath.Join(h.tmp, "no-such", "agy")},
 		Timing: fastTiming(timing), Log: h.log, OwnerUID: rootUID,
-		VerifySandbox: h.verify,
-		Cgroups:       h.cgroups,
+		VerifySandbox:     h.verify,
+		Cgroups:           h.cgroups,
+		SelfUpdateRootDir: filepath.Join(h.tmp, "su-root"),
 	})
 	if err != nil {
 		h.t.Fatal(err)

@@ -157,9 +157,17 @@ new capability.
   - `capabilities` lists `self_update.v1` when the binary has the update
     code (whatever the policy says).
   - `self_update` (object, optional, display only):
-    `{"mode": "off"|"server", "state": "idle"|"draining"|"updating"|"cooldown", "last": {"from","to","result","reason","at"} | null}`.
-    `result` is `succeeded`, `rolled_back`, `refused` or `failed`; `reason`
-    is a token from §6.
+    `{"mode": "off"|"server", "state": "idle"|"draining"|"updating"|"cooldown", "target": "<ver>", "reason": "<token>", "last": {"from","to","result","reason","at"}}`.
+    `target` is the server's target as the worker last saw it, `reason`
+    says why an idle or cooling-down worker is not updating to it, and
+    `last` (omitted before the first update) is the root step's last
+    result. `result` is `succeeded`, `rolled_back`, `refused` or `failed`;
+    `reason` is a token from §6.
+- **Worker → server, `status`:** the same `self_update` object, sent
+  whenever the state, reason or last result changes, so the console sees
+  draining and the result without waiting for a reconnect. (Added during
+  implementation, 2026-11-27: the approved draft carried it in `hello`
+  only.)
 - **Server → worker, `hello_ok`:** `target_release` (string, optional),
   sent only to a worker that lists `self_update.v1`, and only when
   `DEFECT_DRAINER_WORKER_RELEASE` is set. The value is checked by the

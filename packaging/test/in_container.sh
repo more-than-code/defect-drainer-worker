@@ -55,6 +55,9 @@ layout() { # version
 	attrs /var/lib/dd-worker/credential "dd-worker:dd-worker 700"
 	attrs /home/dd-worker "dd-worker:dd-worker 700"
 	attrs $UNIT "root:root 644"
+	attrs /etc/systemd/system/dd-worker-update.path "root:root 644"
+	attrs /etc/systemd/system/dd-worker-update.service "root:root 644"
+	attrs /var/lib/dd-worker-update "root:root 755"
 	links_to "$1"
 }
 
@@ -101,7 +104,10 @@ test_main() {
 	check "install says it created an empty secrets.env" out_has "created an empty $SECRETS"
 	check "dd-worker cannot read the root-owned secrets.env" sh -c "! runuser -u dd-worker -- cat $SECRETS"
 	check "no policy.toml is created" absent /etc/dd-worker/policy.toml
-	for f in LICENSE NOTICE README-worker.md install.sh policy.example.toml; do
+	check "the update units are the release's" sh -c "cmp $LIB/$V1/dd-worker-update.path /etc/systemd/system/dd-worker-update.path && cmp $LIB/$V1/dd-worker-update.service /etc/systemd/system/dd-worker-update.service"
+	check "the update service runs the installed binary as root" sh -c "grep -qx 'ExecStart=/usr/local/bin/dd-worker update-run' /etc/systemd/system/dd-worker-update.service && grep -qx 'User=root' /etc/systemd/system/dd-worker-update.service"
+	check "update-run refuses a non-root caller" sh -c "! runuser -u dd-worker -- $LINK update-run"
+	for f in LICENSE NOTICE README-worker.md install.sh policy.example.toml dd-worker-update.path dd-worker-update.service; do
 		check "the tarball holds $f" test -f "$LIB/$V1/$f"
 	done
 	check "dd-worker version prints $V1" sh -c "$LINK version | grep -qx '$V1'"
@@ -162,6 +168,7 @@ test_main() {
 	check "it says upgraded $V1 -> $V2" out_has "upgraded $V1 -> $V2 (connected)"
 	check "previous is $V1" sh -c "[ \"\$(cat $LIB/previous)\" = '$V1' ]"
 	check "upgrade restarted the service" grep -qx "restart dd-worker" /tmp/systemctl.log
+	check "upgrade enabled the update trigger" grep -qx "enable --now dd-worker-update.path" /tmp/systemctl.log
 	check "upgrade reloaded systemd" grep -qx "daemon-reload" /tmp/systemctl.log
 	check "daemon-reload came before the restart" reload_before_restart
 	last_restart_is "owner=root lc=1"
@@ -209,7 +216,8 @@ test_main() {
 	echo "# remove"
 	check "remove" inst remove
 	check "remove disabled the unit" grep -qx "disable --now dd-worker" /tmp/systemctl.log
-	for p in $UNIT $LINK $LIB; do check "removed $p" absent "$p"; done
+	check "remove disabled the update trigger" grep -qx "disable --now dd-worker-update.path" /tmp/systemctl.log
+	for p in $UNIT $LINK $LIB /etc/systemd/system/dd-worker-update.path /etc/systemd/system/dd-worker-update.service /var/lib/dd-worker-update; do check "removed $p" absent "$p"; done
 	for p in /etc/dd-worker/policy.toml /etc/dd-worker/secrets.env /var/lib/dd-worker /home/dd-worker; do
 		check "kept $p" test -e "$p"
 	done

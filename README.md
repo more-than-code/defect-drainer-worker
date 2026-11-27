@@ -54,6 +54,13 @@ can check it against the code and against the binary you install.
   allowed domains; `verify_commands = "off"` skips them, and a host that
   can't start the sandbox skips them too. (`internal/worker/policy.go`,
   `internal/sandbox`, `internal/egress`, `packaging/policy.example.toml`)
+- **Updates itself only if you turn it on.** With `auto_update = "server"` in
+  `policy.toml` (default `"off"`), a root oneshot unit installs the server's
+  target release: newer, same minor, from this project's GitHub releases, and
+  only with a valid signature by a release key compiled into the binary. A
+  version that does not come up is rolled back.
+  (`internal/selfupdate/`, `internal/release/`, `cmd/dd-worker/update.go`,
+  `packaging/dd-worker-update.service`)
 
 ## What it sends to the server
 

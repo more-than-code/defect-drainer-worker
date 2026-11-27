@@ -10,6 +10,7 @@ import (
 
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/policy"
 	"github.com/more-than-code/defect-drainer-worker/internal/cgroup"
+	"github.com/more-than-code/defect-drainer-worker/internal/selfupdate"
 	"github.com/more-than-code/defect-drainer-worker/workerproto"
 )
 
@@ -81,6 +82,10 @@ var policySchema = policy.Schema{
 	"job_memory_max":        policy.String,
 	"job_tasks_max":         policy.Int,
 	"job_cpu_percent":       policy.Int,
+	// Self-update (docs/adr/0002-self-update.md §5).
+	"auto_update":             policy.String,
+	"auto_update_window":      policy.String,
+	"auto_update_https_proxy": policy.String,
 }
 
 // Policy is /etc/dd-worker/policy.toml as the worker enforces it. When
@@ -140,6 +145,13 @@ type Policy struct {
 	JobTasksMax   int
 	JobCPUPercent int
 	JobLimitsSet  bool
+	// AutoUpdate is policy auto_update: "off" (the default) or "server",
+	// follow the server's target_release (ADR 0002 §5). AutoUpdateWindow
+	// limits when an update starts; AutoUpdateProxy is the only proxy the
+	// root step's download uses ("": none).
+	AutoUpdate       string
+	AutoUpdateWindow selfupdate.Window
+	AutoUpdateProxy  string
 
 	repoPatterns []repoURL
 }
@@ -234,6 +246,29 @@ func loadPolicy(files policy.Files, skipOwner bool, uid func(os.FileInfo) (uint3
 			return p
 		}
 		p.JobCPUPercent, p.JobLimitsSet = c.Int, true
+	}
+	p.AutoUpdate = workerproto.SelfUpdateOff
+	if s, ok := v["auto_update"]; ok {
+		if s.String != workerproto.SelfUpdateOff && s.String != workerproto.SelfUpdateServer {
+			p.Reason = "bad_auto_update"
+			return p
+		}
+		p.AutoUpdate = s.String
+	}
+	if s, ok := v["auto_update_window"]; ok {
+		w, err := selfupdate.ParseWindow(s.String)
+		if err != nil {
+			p.Reason = "bad_auto_update_window"
+			return p
+		}
+		p.AutoUpdateWindow = w
+	}
+	if s, ok := v["auto_update_https_proxy"]; ok {
+		if !selfupdate.ValidProxy(s.String) {
+			p.Reason = "bad_auto_update_https_proxy"
+			return p
+		}
+		p.AutoUpdateProxy = s.String
 	}
 	if reason := p.check(); reason != "" {
 		p.Reason = reason

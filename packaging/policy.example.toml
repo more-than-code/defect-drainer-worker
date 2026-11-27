@@ -94,3 +94,16 @@ allow_ship = true
 # links to it ("Managed in Deploybot -> Edit"); unset means edited on the host.
 # Versions before 0.2.0-rc6 refuse this key: remove it before a rollback.
 # managed_url = "https://deploybot.example.com/hosts/<host>/files/policy"
+
+# Self-update (see host-setup, Self-update): "server" follows the server's
+# target release by itself; "off" (the default) never updates. Only a newer
+# version within the same minor (0.2.x), signed with the release key
+# compiled into dd-worker, from the project's GitHub releases. Running jobs
+# finish first; a version that does not come up is rolled back.
+# Versions before 0.2.0-rc10 refuse these keys: remove them before a rollback.
+# auto_update = "server"
+# Only start an update in this local-time window (HH:MM-HH:MM, may wrap
+# midnight). Unset: any time.
+# auto_update_window = "02:00-05:00"
+# The only proxy the update download may use (http(s)://host:port).
+# auto_update_https_proxy = "http://proxy.example:3128"

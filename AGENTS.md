@@ -36,6 +36,10 @@ make worker-package-test   # install.sh in a throwaway container (Podman or Dock
 
 A release is a pushed tag `vX.Y.Z` on a commit that is on `main`
 (`.github/workflows/release.yml`): CI runs the gates, builds the tarballs and
-publishes a GitHub Release. The tag is also the Go module version the control
-plane pins. Only a maintainer tags a release, and the control plane's pin is
-bumped in its own PR.
+publishes a GitHub Release; once `internal/release.PublicKeys` holds the real
+keys, the `release` environment's sign job signs `SHA256SUMS` with AWS KMS
+after a maintainer approves it (`docs/adr/0002-self-update.md` §3). Agents
+never approve that deployment, edit the environment or its variables, or
+change `PublicKeys` without the maintainer's word. The tag is also the Go
+module version the control plane pins. Only a maintainer tags a release, and
+the control plane's pin is bumped in its own PR.

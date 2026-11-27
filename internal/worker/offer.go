@@ -72,6 +72,11 @@ func (w *Worker) handleOffer(ctx context.Context, s *socket, f workerproto.Offer
 		w.decline(s, f, workerproto.DeclineBusy, "offer already pending")
 		return
 	}
+	if w.su.draining {
+		w.mu.Unlock()
+		w.decline(s, f, workerproto.DeclineBusy, "updating dd-worker")
+		return
+	}
 	// Offer modes (Main Dev, 2026-11-16): "fresh" for a new job, "rerun"
 	// to the sticky worker, on the job's existing worktrees and seq record.
 	var startedBy string

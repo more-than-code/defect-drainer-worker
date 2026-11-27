@@ -14,6 +14,10 @@
 #                                    and the secrets.env owner it needs)
 #   sh install.sh remove [--purge]   --purge also deletes state, config, user
 #
+# install and upgrade also install the self-update units
+# (dd-worker-update.path and .service, docs/adr/0002-self-update.md). They do
+# nothing until policy.toml sets auto_update = "server".
+#
 # DD_WORKER_RELEASE_BASE overrides the release base URL (https or file only);
 # DD_WORKER_CONNECT_TIMEOUT the upgrade connect check (seconds, default 60).
 set -eu
@@ -32,6 +36,10 @@ ETC=/etc/dd-worker
 STATE=/var/lib/dd-worker
 WORKER_HOME=/home/dd-worker
 UNIT=/etc/systemd/system/dd-worker.service
+# Self-update (docs/adr/0002-self-update.md): the root step's units and dir.
+UPDATE_PATH_UNIT=/etc/systemd/system/dd-worker-update.path
+UPDATE_SERVICE_UNIT=/etc/systemd/system/dd-worker-update.service
+UPDATE_ROOT=/var/lib/dd-worker-update
 SECRETS=$ETC/secrets.env
 WORKER_PATH=/usr/local/bin:/usr/bin:/bin
 CONNECTED_LINE='connected (protocol'
@@ -222,6 +230,22 @@ setup_host() {
 	fi
 	install_unit "$src/dd-worker.service"
 	own_secrets "$UNIT"
+	install_update_units "$src"
+}
+
+# The self-update units from release dir $1 (releases before self-update
+# have none: nothing changes then). Harmless while policy.toml has
+# auto_update = "off": the root step refuses every request.
+install_update_units() {
+	[ -f "$1/dd-worker-update.service" ] && [ -f "$1/dd-worker-update.path" ] || return 0
+	ensure_dir "$UPDATE_ROOT" root:root 0755
+	install -o root -g root -m 0644 "$1/dd-worker-update.service" "$UPDATE_SERVICE_UNIT"
+	install -o root -g root -m 0644 "$1/dd-worker-update.path" "$UPDATE_PATH_UNIT"
+	say "installed $UPDATE_PATH_UNIT and $UPDATE_SERVICE_UNIT (self-update: off until policy.toml sets auto_update = \"server\")"
+	if systemd_up; then
+		systemctl daemon-reload
+		systemctl enable --now dd-worker-update.path
+	fi
 }
 
 # Installs unit file $1 as the dd-worker unit and reloads systemd.
@@ -500,9 +524,11 @@ cmd_remove() {
 	esac
 	need_root remove
 	if systemd_up; then
+		systemctl disable --now dd-worker-update.path 2>/dev/null || true
 		systemctl disable --now dd-worker 2>/dev/null || true
 	fi
-	rm -f "$UNIT"
+	rm -f "$UNIT" "$UPDATE_PATH_UNIT" "$UPDATE_SERVICE_UNIT"
+	rm -rf "$UPDATE_ROOT"
 	if systemd_up; then
 		systemctl daemon-reload
 	fi

@@ -1,8 +1,13 @@
 # dd-worker release: a pushed tag vX.Y.Z on a commit that is on main → the
-# CI gates → `make worker-dist` + the install.sh container test → a GitHub
-# Release with the three tarballs, SHA256SUMS and install.sh. A tag with a
-# -pre suffix (v0.2.0-rc1) is a pre-release. The tag is both the Go module
-# version and the release; the binary's version is the tag without the v.
+# CI gates → `make worker-dist` + the install.sh container test → sign
+# SHA256SUMS with the AWS KMS release key (environment "release", one tap
+# by the maintainer; docs/adr/0002-self-update.md §3) → a GitHub Release
+# with the three tarballs, SHA256SUMS, SHA256SUMS.sig and install.sh. While
+# dd-worker still carries the placeholder key, the sign job is skipped and
+# the release has no signature: hosts then never update to it by themselves.
+# A tag with a -pre suffix (v0.2.0-rc1) is a pre-release. The tag is both
+# the Go module version and the release; the binary's version is the tag
+# without the v.
 # This workflow never deploys.
 name: release
 
@@ -60,6 +65,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    outputs:
+      keys: ${{ steps.keys.outputs.keys }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,6 +80,19 @@ jobs:
         run: go test ./... -race -count=1 -timeout 25m
       - name: Tidy grep
         run: make tidy-check
+      # "real": the compiled release keys are real, so this release is
+      # signed (and go test -tags release checks them); "placeholder": it is
+      # published unsigned.
+      - name: Release keys
+        id: keys
+        run: |
+          set -euo pipefail
+          k=$(go run ./cmd/release-sign keys)
+          case "$k" in
+          real\ *) go test -tags release -count=1 ./internal/release; echo "keys=real" >> "$GITHUB_OUTPUT" ;;
+          placeholder) echo "::warning::dd-worker carries the placeholder release key: this release is not signed and no host updates to it by itself"; echo "keys=placeholder" >> "$GITHUB_OUTPUT" ;;
+          *) echo "::error::release-sign keys printed '$k'"; exit 1 ;;
+          esac
 
   build:
     needs: [check, gates]
@@ -86,11 +106,13 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # SOURCE_DATE_EPOCH (the commit time) makes the tarballs reproducible,
+      # so the sign job can rebuild and compare before it signs.
       - name: make worker-dist
         env:
           WORKER_VERSION: ${{ needs.check.outputs.version }}
           WORKER_RELEASE_BASE: https://github.com/more-than-code/defect-drainer-worker/releases/download
-        run: make worker-dist
+        run: SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) make worker-dist
       - name: Check the assets
         env:
           WORKER_VERSION: ${{ needs.check.outputs.version }}
@@ -117,9 +139,93 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # Signs SHA256SUMS with the AWS KMS release key. The environment admits
+  # only v* tags and waits for the maintainer's approval; AWS hands
+  # short-lived credentials only to a job whose OIDC subject names this
+  # repository's release environment, and the role may only kms:Sign with
+  # ED25519_SHA_512 on that one key. No secret is stored in GitHub: the
+  # region, role and key are environment variables.
+  sign:
+    needs: [check, gates, build]
+    if: needs.gates.outputs.keys == 'real' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      # Sign only what this job built itself, and only when it is byte for
+      # byte what the build job published.
+      - name: Rebuild and compare with the build job
+        env:
+          WORKER_VERSION: ${{ needs.check.outputs.version }}
+          WORKER_RELEASE_BASE: https://github.com/more-than-code/defect-drainer-worker/releases/download
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) sh packaging/dist.sh "$RUNNER_TEMP/own"
+          go build -o "$RUNNER_TEMP/release-sign" ./cmd/release-sign
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: worker-dist-${{ needs.check.outputs.version }}
+          path: ${{ runner.temp }}/built
+      - name: Same SHA256SUMS as the build job
+        run: cmp "$RUNNER_TEMP/own/SHA256SUMS" "$RUNNER_TEMP/built/SHA256SUMS"
+      - name: Sign with the KMS release key
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ROLE_ARN: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+          KEY_ID: ${{ vars.AWS_KMS_KEY_ID }}
+        run: |
+          set -euo pipefail
+          for v in AWS_REGION ROLE_ARN KEY_ID; do
+            [ -n "${!v}" ] || { echo "::error::$v is not set in the release environment's variables"; exit 1; }
+          done
+          sums="$RUNNER_TEMP/own/SHA256SUMS"
+          [ "$(stat -c %s "$sums")" -le 4096 ] || { echo "::error::SHA256SUMS is over KMS's 4096-byte RAW limit"; exit 1; }
+          oidc=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          echo "::add-mask::$oidc"
+          creds=$(aws sts assume-role-with-web-identity --role-arn "$ROLE_ARN" \
+            --role-session-name "release-$GITHUB_RUN_ID" --web-identity-token "$oidc" \
+            --duration-seconds 900 --query Credentials --output json)
+          unset oidc
+          AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<<"$creds")
+          AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<<"$creds")
+          AWS_SESSION_TOKEN=$(jq -r .SessionToken <<<"$creds")
+          echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+          echo "::add-mask::$AWS_SESSION_TOKEN"
+          unset creds
+          export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+          mkdir -p "$RUNNER_TEMP/sig"
+          sig=$(aws kms sign --key-id "$KEY_ID" --message "fileb://$sums" --message-type RAW \
+            --signing-algorithm ED25519_SHA_512 --query Signature --output text)
+          printf '%s\n' "$sig" > "$RUNNER_TEMP/sig/SHA256SUMS.sig"
+      # A signature hosts would refuse is never published.
+      - name: Check the signature with the compiled keys
+        run: '"$RUNNER_TEMP/release-sign" verify-compiled "$RUNNER_TEMP/own/SHA256SUMS" "$RUNNER_TEMP/sig/SHA256SUMS.sig"'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sig-${{ needs.check.outputs.version }}
+          path: ${{ runner.temp }}/sig/SHA256SUMS.sig
+          if-no-files-found: error
+          retention-days: 30
+
   # The only job with contents: write. It runs no code from the repository.
   release:
-    needs: [check, build]
+    needs: [check, gates, build, sign]
+    # Signed when the keys are real; unsigned (sign skipped) only while
+    # dd-worker carries the placeholder key.
+    if: >-
+      always() && needs.check.result == 'success' && needs.gates.result == 'success' &&
+      needs.build.result == 'success' &&
+      (needs.sign.result == 'success' || (needs.gates.outputs.keys == 'placeholder' && needs.sign.result == 'skipped'))
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -127,6 +233,11 @@ jobs:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: worker-dist-${{ needs.check.outputs.version }}
+          path: dist
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        if: needs.sign.result == 'success'
+        with:
+          name: sig-${{ needs.check.outputs.version }}
           path: dist
       - name: Verify the downloaded assets
         run: cd dist && sha256sum -c SHA256SUMS
@@ -165,8 +276,9 @@ jobs:
           flags=(--verify-tag --title "dd-worker $VERSION" \
             --notes "dd-worker $VERSION, built from commit $GITHUB_SHA. Install: download install.sh, then \`sudo sh install.sh install $VERSION\` (docs/host-setup.md). Verify assets with \`sha256sum -c SHA256SUMS\`.")
           [ "$PRERELEASE" = true ] && flags+=(--prerelease)
-          gh release create "$TAG" "${flags[@]}" \
-            dist/dd-worker_"$VERSION"_*.tar.gz dist/SHA256SUMS dist/install.sh
+          assets=(dist/dd-worker_"$VERSION"_*.tar.gz dist/SHA256SUMS dist/install.sh)
+          [ -f dist/SHA256SUMS.sig ] && assets+=(dist/SHA256SUMS.sig)
+          gh release create "$TAG" "${flags[@]}" "${assets[@]}"
           {
             echo "### dd-worker $VERSION released from $GITHUB_SHA"
             echo

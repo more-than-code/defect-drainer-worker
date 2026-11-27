@@ -35,6 +35,8 @@ type Snapshot struct {
 	// Seccomp is the worker's own seccomp state, from the unit's
 	// SystemCallFilter: "on (1 filter)" or "off".
 	Seccomp string `json:"seccomp,omitempty"`
+	// SelfUpdate is the self-update state, as hello and status send it.
+	SelfUpdate *workerproto.SelfUpdateStatus `json:"selfUpdate,omitempty"`
 }
 
 func snapshotPath(p Paths) string { return p.StatusFile() }
@@ -55,6 +57,7 @@ func (w *Worker) writeSnapshot(connected bool) {
 	s.VerifySandbox = verifySandboxLine(w.verifyNow().err)
 	s.JobLimits = w.limitsLine(w.policyNow())
 	s.Seccomp = seccompLine()
+	s.SelfUpdate = w.selfUpdateWire()
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return

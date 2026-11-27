@@ -47,8 +47,9 @@ type fakeServer struct {
 	noReattach    bool                 // do not send lease frames after hello
 	silent        bool                 // stop answering on existing sockets (a dead link)
 	pendingRot    []string
-	noGitTokenCap bool // hello_ok without gittoken.v1
-	gitTokenFail  int  // git-token answers this status instead of minting
+	noGitTokenCap bool   // hello_ok without gittoken.v1
+	targetRelease string // hello_ok.target_release
+	gitTokenFail  int    // git-token answers this status instead of minting
 
 	// gitMints records every git-token call (§14); pendingShips is the
 	// ship controls not yet answered, by request id → job and repos.
@@ -253,9 +254,10 @@ func (fs *fakeServer) handle(ctx context.Context, c *websocket.Conn, typ string,
 		if fs.noGitTokenCap {
 			caps = caps[:1]
 		}
+		target := fs.targetRelease
 		fs.mu.Unlock()
 		fs.write(c, workerproto.HelloOK{Header: workerproto.NewHeader(workerproto.TypeHelloOK), Protocol: 1, HeartbeatSec: hb,
-			ServerTime: time.Now().UTC().Format(time.RFC3339), Capabilities: caps})
+			ServerTime: time.Now().UTC().Format(time.RFC3339), Capabilities: caps, TargetRelease: target})
 		// §5.3 re-attach: a lease frame, same lease id, fresh token, for each
 		// busy job this server knows; lease_lost for the others.
 		fs.mu.Lock()
