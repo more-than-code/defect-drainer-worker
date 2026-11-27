@@ -42,7 +42,7 @@ func TestWindow(t *testing.T) {
 }
 
 func TestValidProxy(t *testing.T) {
-	for _, ok := range []string{"http://proxy.internal:3128", "https://10.0.0.1:8443", "http://[::1]:3128"} {
+	for _, ok := range []string{"http://proxy.example:3128", "https://proxy.example:8443", "http://[::1]:3128"} {
 		if !ValidProxy(ok) {
 			t.Errorf("%q refused", ok)
 		}

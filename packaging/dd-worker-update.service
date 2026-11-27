@@ -9,9 +9,10 @@
 [Unit]
 Description=Defect Drainer worker self-update
 Documentation=https://github.com/more-than-code/defect-drainer-worker/blob/main/docs/adr/0002-self-update.md
-# The worker could otherwise make it spin.
-StartLimitIntervalSec=1h
-StartLimitBurst=4
+# No start limit: update-run spaces its own runs a minute apart (a request
+# the worker keeps writing costs one cheap run a minute), and a start limit
+# would leave the path unit failed until someone ran reset-failed.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
@@ -35,4 +36,10 @@ LockPersonality=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+MemoryMax=512M
 UMask=0022

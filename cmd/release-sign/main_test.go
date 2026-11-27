@@ -52,15 +52,23 @@ func TestVerifyCompiled(t *testing.T) {
 }
 
 func TestKeys(t *testing.T) {
+	old := release.PublicKeys
+	defer func() { release.PublicKeys = old }()
+	// Whatever is compiled in: a placeholder build, and a mix (a real key
+	// next to a placeholder is a mistake, so it is not signed).
+	a, _, _ := ed25519.GenerateKey(rand.Reader)
+	b, _, _ := ed25519.GenerateKey(rand.Reader)
+	release.PublicKeys = []ed25519.PublicKey{make([]byte, ed25519.PublicKeySize)}
 	var out, errb bytes.Buffer
 	if code := run([]string{"keys"}, &out, &errb); code != 0 || strings.TrimSpace(out.String()) != "placeholder" {
 		t.Fatalf("placeholder build: %d %q", code, out.String())
 	}
-	a, _, _ := ed25519.GenerateKey(rand.Reader)
-	b, _, _ := ed25519.GenerateKey(rand.Reader)
-	old := release.PublicKeys
+	release.PublicKeys = []ed25519.PublicKey{a, make([]byte, ed25519.PublicKeySize)}
+	out.Reset()
+	if code := run([]string{"keys"}, &out, &errb); code != 0 || strings.TrimSpace(out.String()) != "placeholder" {
+		t.Fatalf("mixed: %d %q", code, out.String())
+	}
 	release.PublicKeys = []ed25519.PublicKey{a, b}
-	defer func() { release.PublicKeys = old }()
 	out.Reset()
 	if code := run([]string{"keys"}, &out, &errb); code != 0 || strings.TrimSpace(out.String()) != "real 2" {
 		t.Fatalf("real keys: %d %q", code, out.String())

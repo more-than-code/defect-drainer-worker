@@ -392,4 +392,142 @@ func TestHTTPFetcher(t *testing.T) {
 	if err := c.CheckRedirect(&http.Request{URL: evil}, []*http.Request{req}); err == nil {
 		t.Error("redirect to another host allowed")
 	}
+	ok, _ := url.Parse("https://objects.githubusercontent.com/x")
+	if err := c.CheckRedirect(&http.Request{URL: ok}, []*http.Request{req}); err != nil {
+		t.Errorf("redirect to the asset host refused: %v", err)
+	}
+	via := make([]*http.Request, MaxRedirects)
+	for i := range via {
+		via[i] = req
+	}
+	if err := c.CheckRedirect(&http.Request{URL: ok}, via); err == nil {
+		t.Error("redirect past MaxRedirects allowed")
+	}
+}
+
+// install.sh stopped after it switched (no "back on"): the root step
+// switches back itself.
+func TestRunRollsBackAHalfInstall(t *testing.T) {
+	f := newFixture(t)
+	f.build()
+	installed := "0.2.0"
+	f.env.Installed = func() (string, error) { return installed, nil }
+	f.install = func() (int, string, error) { installed = "0.2.1"; return 1, "systemctl restart dd-worker failed", nil }
+	expect(t, "half install", f.run("0.2.1\n"), workerproto.SelfUpdateRolledBack, ReasonInstallFailed)
+	if !f.rolled {
+		t.Fatal("not rolled back")
+	}
+	f2 := newFixture(t)
+	f2.build()
+	f2.install = func() (int, string, error) { return 1, "prerequisites missing", nil }
+	expect(t, "nothing switched", f2.run("0.2.1\n"), workerproto.SelfUpdateFailed, ReasonInstallFailed)
+	if f2.rolled {
+		t.Fatal("rolled back a host that never switched")
+	}
+}
+
+// The root step holds a failed target back for Cooldown on its own, and
+// keeps the result that says why; timing refusals do not count.
+func TestRunCoolsDown(t *testing.T) {
+	f := newFixture(t)
+	f.build()
+	f.healthy = errors.New("x")
+	expect(t, "first", f.run("0.2.1\n"), workerproto.SelfUpdateRolledBack, ReasonHealth)
+	f.healthy, f.rolled = nil, false
+	os.WriteFile(filepath.Join(f.env.StateDir, RequestDirName, RequestName), []byte("0.2.1\n"), 0o600)
+	res, err := Run(context.Background(), f.env)
+	if err != nil || res != nil {
+		t.Fatalf("in the cool-down: %+v %v", res, err)
+	}
+	if got := ReadResult(f.env.RootDir); got == nil || got.Reason != ReasonHealth {
+		t.Fatalf("result.json replaced: %+v", got)
+	}
+	if RequestPending(f.env.StateDir) {
+		t.Fatal("request not taken")
+	}
+	f.env.Now = func() time.Time { return time.Date(2026, 11, 27, 9, 1, 0, 0, time.UTC) }
+	expect(t, "after", f.run("0.2.1\n"), workerproto.SelfUpdateSucceeded, "")
+
+	g := newFixture(t)
+	g.build()
+	g.busy = true
+	expect(t, "busy", g.run("0.2.1\n"), workerproto.SelfUpdateRefused, ReasonBusy)
+	g.busy = false
+	expect(t, "busy is retried", g.run("0.2.1\n"), workerproto.SelfUpdateSucceeded, "")
+}
+
+// An installed version dir that is not the signed release is replaced
+// before install.sh, which would reuse it as it is.
+func TestRunReplacesAStaleVersionDir(t *testing.T) {
+	f := newFixture(t)
+	f.build()
+	f.env.LibDir = t.TempDir()
+	stale := filepath.Join(f.env.LibDir, "0.2.1")
+	os.MkdirAll(stale, 0o755)
+	os.WriteFile(filepath.Join(stale, "dd-worker"), []byte("old unsigned build"), 0o755)
+	expect(t, "stale", f.run("0.2.1\n"), workerproto.SelfUpdateSucceeded, "")
+	if _, err := os.Stat(stale); err == nil {
+		t.Fatal("stale dir kept")
+	}
+	same := filepath.Join(f.env.LibDir, "0.2.1")
+	os.MkdirAll(same, 0o755)
+	os.WriteFile(filepath.Join(same, "dd-worker"), []byte("binary"), 0o755) // the bundle's
+	os.Remove(filepath.Join(f.env.RootDir, ResultName))
+	expect(t, "same", f.run("0.2.1\n"), workerproto.SelfUpdateSucceeded, "")
+	if _, err := os.Stat(same); err != nil {
+		t.Fatal("identical dir removed")
+	}
+}
+
+// Whatever the worker puts at request is removed, so the path unit does
+// not fire on it again: a directory, a link.
+func TestRunClearsAnyRequest(t *testing.T) {
+	f := newFixture(t)
+	f.build()
+	os.MkdirAll(filepath.Join(f.env.StateDir, RequestDirName, RequestName), 0o700)
+	res, err := Run(context.Background(), f.env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, "dir", res, workerproto.SelfUpdateRefused, ReasonBadRequest)
+	if _, err := os.Lstat(filepath.Join(f.env.StateDir, RequestDirName, RequestName)); err == nil {
+		t.Fatal("directory left at request")
+	}
+	os.Symlink("/nonexistent", filepath.Join(f.env.StateDir, RequestDirName, RequestName))
+	Run(context.Background(), f.env)
+	if _, err := os.Lstat(filepath.Join(f.env.StateDir, RequestDirName, RequestName)); err == nil {
+		t.Fatal("link left at request")
+	}
+}
+
+// A lock that can't be taken for another reason than a running run still
+// answers the request.
+func TestRunAnswersWhenTheLockFails(t *testing.T) {
+	f := newFixture(t)
+	f.build()
+	f.env.LockPath = filepath.Join(t.TempDir(), "missing", "lock")
+	os.MkdirAll(filepath.Join(f.env.StateDir, RequestDirName), 0o700)
+	os.WriteFile(filepath.Join(f.env.StateDir, RequestDirName, RequestName), []byte("0.2.1\n"), 0o600)
+	res, err := Run(context.Background(), f.env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, "lock", res, workerproto.SelfUpdateFailed, ReasonInternal)
+	if RequestPending(f.env.StateDir) {
+		t.Fatal("request left")
+	}
+}
+
+// Runs are spaced MinInterval apart.
+func TestRunPaces(t *testing.T) {
+	f := newFixture(t)
+	f.build()
+	f.env.MinInterval = 300 * time.Millisecond
+	f.env.Now = time.Now
+	f.run("")
+	start := time.Now()
+	f.run("")
+	if d := time.Since(start); d < 250*time.Millisecond {
+		t.Fatalf("second run after %s", d)
+	}
 }

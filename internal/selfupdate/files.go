@@ -27,7 +27,7 @@ const (
 )
 
 // requestRE is the only request the root step reads: one version line.
-var requestRE = regexp.MustCompile(`^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-rc[1-9][0-9]{0,3})?$`)
+var requestRE = regexp.MustCompile(`^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})(-rc[1-9][0-9]{0,3})?$`)
 
 // ValidRequest reports whether b (the request file's bytes, one line with
 // an optional newline) names a version, and returns it.

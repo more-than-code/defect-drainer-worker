@@ -113,10 +113,12 @@ type Worker struct {
 	serverCaps []string
 	envRefs    map[string]int // SecretEnv names set in this process
 	su         selfUpdateState
+	sock       *socket
+	revoked    bool
 	// suWG holds the self-update goroutines Run starts; Run waits for them.
-	suWG    sync.WaitGroup
-	sock    *socket
-	revoked bool
+	// suStep serialises stepSelfUpdate.
+	suWG   sync.WaitGroup
+	suStep sync.Mutex
 
 	redactor redact.Exact
 

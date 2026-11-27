@@ -23,15 +23,22 @@ var selfUpdateTick = time.Minute
 const (
 	// selfUpdateCooldown keeps a target that did not succeed from being
 	// asked for again, unless the server's target changes.
-	selfUpdateCooldown = 6 * time.Hour
+	selfUpdateCooldown = selfupdate.Cooldown
+	// selfUpdateRetry is the wait after a refusal about timing (busy,
+	// outside the window): ask again soon, not in 6 hours.
+	selfUpdateRetry = 5 * time.Minute
 	// selfUpdateNoAnswer is how long a request may stay unread before the
 	// worker gives up on it: the host has no update unit (installed with
 	// an install.sh before self-update) or it is not running.
 	selfUpdateNoAnswer = 10 * time.Minute
+	// selfUpdateNoResult is how long the worker waits for a result once the
+	// root step took the request (its unit stops it after 15 minutes).
+	selfUpdateNoResult = 20 * time.Minute
 	// Reasons the worker itself reports (besides release.Reason*).
 	reasonNoTarget      = "no_target"
 	reasonNoRootStep    = "no_root_step"
 	reasonPolicyInvalid = "policy_invalid"
+	reasonNoResult      = "no_result"
 )
 
 // selfUpdateState is guarded by w.mu.
@@ -40,11 +47,17 @@ type selfUpdateState struct {
 	state     string
 	reason    string
 	draining  bool
-	requested time.Time // when the request was written ("" zero: none)
+	requested time.Time // when the request was written (zero: none)
+	// requestedTo is the version the request named: the root step's
+	// result answers it, whatever the server's target is by then.
+	requestedTo string
+	// badTarget: the server sent a target that is not a version.
+	badTarget bool
 	last      *workerproto.SelfUpdateResult
-	// cooled is the target that ended without success, and until when.
+	// cooled is the target that ended without success, until when, and why.
 	cooled      string
 	cooledUntil time.Time
+	coolReason  string
 }
 
 func (w *Worker) selfUpdateRootDir() string {
@@ -56,15 +69,9 @@ func (w *Worker) selfUpdateRootDir() string {
 
 // initSelfUpdate reads the root step's last result once at start.
 func (w *Worker) initSelfUpdate() {
-	last := selfupdate.ReadResult(w.selfUpdateRootDir())
 	w.mu.Lock()
 	w.su.state = workerproto.SelfUpdateIdle
-	w.su.last = last
-	if last != nil && last.Result != workerproto.SelfUpdateSucceeded && last.To != "" {
-		if at, err := time.Parse(time.RFC3339, last.At); err == nil && time.Since(at) < selfUpdateCooldown {
-			w.su.cooled, w.su.cooledUntil = last.To, at.Add(selfUpdateCooldown)
-		}
-	}
+	last := w.adoptResultLocked(time.Now())
 	w.mu.Unlock()
 	if last != nil {
 		w.logf("self-update: last result %s -> %s: %s %s", last.From, last.To, last.Result, last.Reason)
@@ -73,9 +80,58 @@ func (w *Worker) initSelfUpdate() {
 	_ = os.Remove(filepath.Join(w.opts.Paths.StateDir, selfupdate.RequestDirName, selfupdate.RequestName))
 }
 
+// adoptResultLocked reads result.json and, when it holds a result this
+// worker has not seen, records it and its cool-down. The root step writes
+// it last, often after it restarted this worker, so every step reads it
+// again. It returns the new result, or nil. Called with w.mu held.
+func (w *Worker) adoptResultLocked(now time.Time) *workerproto.SelfUpdateResult {
+	res := selfupdate.ReadResult(w.selfUpdateRootDir())
+	if res == nil || sameResult(res, w.su.last) || !resultNewer(res, w.su.last) {
+		return nil
+	}
+	su := &w.su
+	su.last = res
+	switch {
+	case res.To == "" || res.Result == workerproto.SelfUpdateSucceeded:
+	case selfupdate.Retryable(res):
+		su.cooled, su.cooledUntil, su.coolReason = res.To, now.Add(selfUpdateRetry), res.Reason
+	default:
+		until := now.Add(selfUpdateCooldown)
+		if at, err := time.Parse(time.RFC3339, res.At); err == nil {
+			until = at.Add(selfUpdateCooldown)
+		}
+		su.cooled, su.cooledUntil, su.coolReason = res.To, until, res.Reason
+	}
+	// It answers this worker's request (or the root step could not read it).
+	if su.state == workerproto.SelfUpdateUpdating && (res.To == su.requestedTo || res.To == "") {
+		su.state, su.draining, su.requested, su.requestedTo = workerproto.SelfUpdateIdle, false, time.Time{}, ""
+	}
+	return res
+}
+
+// resultNewer: a has a later At than b (a result with no time is newer
+// than none).
+func resultNewer(a, b *workerproto.SelfUpdateResult) bool {
+	if b == nil {
+		return true
+	}
+	ta, ea := time.Parse(time.RFC3339, a.At)
+	tb, eb := time.Parse(time.RFC3339, b.At)
+	if ea != nil || eb != nil {
+		return a.At != b.At
+	}
+	return ta.After(tb)
+}
+
 // setTarget records hello_ok.target_release and re-checks at once.
 func (w *Worker) setTarget(target string) {
 	w.mu.Lock()
+	// The server is not trusted with more than a version string.
+	_, err := release.ParseVersion(target)
+	w.su.badTarget = target != "" && err != nil
+	if w.su.badTarget {
+		target = ""
+	}
 	w.su.target = target
 	w.mu.Unlock()
 	w.stepSelfUpdate()
@@ -125,10 +181,13 @@ func (w *Worker) selfUpdateWire() *workerproto.SelfUpdateStatus {
 // stepSelfUpdate moves the state machine one step and sends a status frame
 // when the state changed.
 func (w *Worker) stepSelfUpdate() {
+	// One step at a time: the ticker and a hello_ok may both call this.
+	w.suStep.Lock()
+	defer w.suStep.Unlock()
 	before := *w.selfUpdateWire()
 	w.advanceSelfUpdate(time.Now())
 	after := *w.selfUpdateWire()
-	if before.State != after.State || before.Reason != after.Reason || !sameResult(before.Last, after.Last) {
+	if before.State != after.State || before.Reason != after.Reason || before.Target != after.Target || !sameResult(before.Last, after.Last) {
 		w.logf("self-update: %s %s (target %s)", after.State, after.Reason, after.Target)
 		w.send(w.statusFrame())
 		w.writeSnapshot(w.sockUp())
@@ -146,27 +205,22 @@ func (w *Worker) advanceSelfUpdate(now time.Time) {
 	w.mu.Lock()
 	pol := w.policy
 	su := &w.su
+	w.adoptResultLocked(now)
 	// A request with the root step: wait for its answer.
 	if su.state == workerproto.SelfUpdateUpdating {
 		pending := selfupdate.RequestPending(w.opts.Paths.StateDir)
-		res := selfupdate.ReadResult(w.selfUpdateRootDir())
-		if res != nil && !sameResult(res, su.last) && res.To == su.target {
-			// The root step answered without restarting this process: it
-			// refused or failed before changing anything.
-			su.last = res
-			su.state, su.reason, su.draining, su.requested = workerproto.SelfUpdateCooldown, res.Reason, false, time.Time{}
-			if res.Result != workerproto.SelfUpdateSucceeded {
-				su.cooled, su.cooledUntil = res.To, now.Add(selfUpdateCooldown)
-			}
-			w.mu.Unlock()
-			return
-		}
-		if pending && now.Sub(su.requested) > selfUpdateNoAnswer {
+		giveUp := ""
+		switch {
+		case pending && now.Sub(su.requested) > selfUpdateNoAnswer:
 			_ = os.Remove(filepath.Join(w.opts.Paths.StateDir, selfupdate.RequestDirName, selfupdate.RequestName))
-			su.state, su.reason, su.draining, su.requested = workerproto.SelfUpdateCooldown, reasonNoRootStep, false, time.Time{}
-			su.cooled, su.cooledUntil = su.target, now.Add(selfUpdateCooldown)
-			w.mu.Unlock()
-			return
+			giveUp = reasonNoRootStep
+		case !pending && now.Sub(su.requested) > selfUpdateNoResult:
+			// Taken, never answered: the root step was stopped or died.
+			giveUp = reasonNoResult
+		}
+		if giveUp != "" {
+			su.cooled, su.cooledUntil, su.coolReason = su.requestedTo, now.Add(selfUpdateCooldown), giveUp
+			su.state, su.reason, su.draining, su.requested, su.requestedTo = workerproto.SelfUpdateCooldown, giveUp, false, time.Time{}, ""
 		}
 		w.mu.Unlock()
 		return
@@ -177,16 +231,15 @@ func (w *Worker) advanceSelfUpdate(now time.Time) {
 		why = reasonPolicyInvalid
 	case pol.AutoUpdate != workerproto.SelfUpdateServer:
 		why = selfupdate.ReasonOff
+	case su.badTarget:
+		why = release.ReasonNotAllowed
 	case su.target == "":
 		why = reasonNoTarget
 	default:
 		why = release.Allowed(Version, su.target)
 	}
 	if why == "" && su.cooled == su.target && now.Before(su.cooledUntil) {
-		su.state, su.reason, su.draining = workerproto.SelfUpdateCooldown, "", false
-		if su.last != nil && su.last.To == su.target {
-			su.reason = su.last.Reason
-		}
+		su.state, su.reason, su.draining = workerproto.SelfUpdateCooldown, su.coolReason, false
 		w.mu.Unlock()
 		return
 	}
@@ -211,6 +264,6 @@ func (w *Worker) advanceSelfUpdate(now time.Time) {
 		return
 	}
 	w.mu.Lock()
-	w.su.state, w.su.requested = workerproto.SelfUpdateUpdating, now
+	w.su.state, w.su.requested, w.su.requestedTo = workerproto.SelfUpdateUpdating, now, target
 	w.mu.Unlock()
 }

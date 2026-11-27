@@ -120,7 +120,7 @@ func TestVersionOrder(t *testing.T) {
 			t.Errorf("String(%s) = %s", order[i], v.String())
 		}
 	}
-	for _, bad := range []string{"", "v0.2.0", "0.2", "0.2.0-beta1", "0.2.0-rc", "0.2.0-rc0", "0.2.0-rc01", "0.2.0+x", "00000.1.1", "0.2.0-rc1.2", "0.2.0\n"} {
+	for _, bad := range []string{"", "v0.2.0", "0.2", "0.2.0-beta1", "0.2.0-rc", "0.2.0-rc0", "0.2.0-rc01", "0.2.0+x", "00000.1.1", "0.2.01", "00.2.0", "0.2.0-rc1.2", "0.2.0\n"} {
 		if _, err := ParseVersion(bad); err == nil {
 			t.Errorf("ParseVersion(%q) accepted", bad)
 		}

@@ -200,3 +200,122 @@ func TestSelfUpdateReportsTheLastResultAtStart(t *testing.T) {
 		t.Fatalf("hello self_update %+v", hello.SelfUpdate)
 	}
 }
+
+// suWorker is a bare Worker for driving advanceSelfUpdate by hand.
+func suWorker(t *testing.T, target string) *Worker {
+	t.Helper()
+	w := &Worker{offers: map[string]*pendingOffer{}, jobs: map[string]*job{}, logOut: &syncBuf{}}
+	tmp := t.TempDir()
+	w.opts.Paths = Paths{StateDir: filepath.Join(tmp, "state")}
+	w.opts.SelfUpdateRootDir = filepath.Join(tmp, "root")
+	os.MkdirAll(w.opts.Paths.StateDir, 0o700)
+	os.MkdirAll(w.opts.SelfUpdateRootDir, 0o755)
+	w.policy = Policy{Valid: true, AutoUpdate: workerproto.SelfUpdateServer}
+	w.su.state = workerproto.SelfUpdateIdle
+	w.su.target = target
+	return w
+}
+
+func writeSUResult(t *testing.T, w *Worker, r workerproto.SelfUpdateResult) {
+	t.Helper()
+	b, _ := json.Marshal(r)
+	if err := os.WriteFile(filepath.Join(w.opts.SelfUpdateRootDir, selfupdate.ResultName), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The root step writes result.json last, after it restarted the worker: a
+// running worker picks it up on a later step and cools down.
+func TestSelfUpdateReadsAResultWrittenAfterStart(t *testing.T) {
+	withVersion(t, "0.2.0")
+	now := time.Date(2026, 11, 27, 3, 0, 0, 0, time.UTC)
+	w := suWorker(t, "0.2.1")
+	w.advanceSelfUpdate(now)
+	if w.su.state != workerproto.SelfUpdateUpdating {
+		t.Fatalf("requested: %+v", w.su)
+	}
+	// The root step takes the request, restarts the worker (a new process
+	// with no result yet), and writes the result after.
+	_ = os.Remove(filepath.Join(w.opts.Paths.StateDir, selfupdate.RequestDirName, selfupdate.RequestName))
+	w = suWorker(t, "0.2.1")
+	w.initSelfUpdate()
+	writeSUResult(t, w, workerproto.SelfUpdateResult{From: "0.2.0", To: "0.2.1", Result: workerproto.SelfUpdateRolledBack, Reason: "health", At: now.Format(time.RFC3339)})
+	w.advanceSelfUpdate(now.Add(time.Minute))
+	if w.su.state != workerproto.SelfUpdateCooldown || w.su.reason != "health" || w.su.last == nil || w.su.last.Result != workerproto.SelfUpdateRolledBack {
+		t.Fatalf("after the result: %+v", w.su)
+	}
+	// Cooled for 6 hours from the result's time, then asks again.
+	w.advanceSelfUpdate(now.Add(selfUpdateCooldown - time.Minute))
+	if w.su.state != workerproto.SelfUpdateCooldown {
+		t.Fatalf("before the cool-down ends: %+v", w.su)
+	}
+	w.advanceSelfUpdate(now.Add(selfUpdateCooldown + time.Minute))
+	if w.su.state != workerproto.SelfUpdateUpdating {
+		t.Fatalf("after the cool-down: %+v", w.su)
+	}
+}
+
+// A refusal about timing (busy, outside the window) is retried in minutes.
+func TestSelfUpdateRetriesABusyRefusalSoon(t *testing.T) {
+	withVersion(t, "0.2.0")
+	now := time.Date(2026, 11, 27, 3, 0, 0, 0, time.UTC)
+	w := suWorker(t, "0.2.1")
+	writeSUResult(t, w, workerproto.SelfUpdateResult{From: "0.2.0", To: "0.2.1", Result: workerproto.SelfUpdateRefused, Reason: "busy", At: now.Format(time.RFC3339)})
+	w.advanceSelfUpdate(now)
+	if w.su.state != workerproto.SelfUpdateCooldown || w.su.reason != "busy" {
+		t.Fatalf("busy: %+v", w.su)
+	}
+	w.advanceSelfUpdate(now.Add(selfUpdateRetry + time.Second))
+	if w.su.state != workerproto.SelfUpdateUpdating {
+		t.Fatalf("after the retry wait: %+v", w.su)
+	}
+}
+
+// The result answers the version the request named, even when the
+// server's target changed meanwhile; a request taken and never answered
+// ends the drain after selfUpdateNoResult.
+func TestSelfUpdateNeverDrainsForever(t *testing.T) {
+	withVersion(t, "0.2.0")
+	now := time.Date(2026, 11, 27, 3, 0, 0, 0, time.UTC)
+	reqFile := func(w *Worker) string {
+		return filepath.Join(w.opts.Paths.StateDir, selfupdate.RequestDirName, selfupdate.RequestName)
+	}
+
+	w := suWorker(t, "0.2.1")
+	w.advanceSelfUpdate(now)
+	if w.su.state != workerproto.SelfUpdateUpdating || w.su.requestedTo != "0.2.1" {
+		t.Fatalf("requested: %+v", w.su)
+	}
+	w.setTarget("0.2.2")
+	os.Remove(reqFile(w))
+	writeSUResult(t, w, workerproto.SelfUpdateResult{From: "0.2.0", To: "0.2.1", Result: workerproto.SelfUpdateFailed, Reason: "download_failed", At: now.Add(time.Minute).Format(time.RFC3339)})
+	w.advanceSelfUpdate(now.Add(2 * time.Minute))
+	if w.su.state != workerproto.SelfUpdateUpdating || w.su.requestedTo != "0.2.2" {
+		t.Fatalf("the old target's answer did not free the worker for the new one: %+v", w.su)
+	}
+
+	w = suWorker(t, "0.2.1")
+	w.advanceSelfUpdate(now)
+	os.Remove(reqFile(w)) // taken by a root step that then died
+	w.advanceSelfUpdate(now.Add(selfUpdateNoResult - time.Minute))
+	if w.su.state != workerproto.SelfUpdateUpdating || !w.su.draining {
+		t.Fatalf("still waiting: %+v", w.su)
+	}
+	w.advanceSelfUpdate(now.Add(selfUpdateNoResult + time.Minute))
+	if w.su.state != workerproto.SelfUpdateCooldown || w.su.reason != reasonNoResult || w.su.draining {
+		t.Fatalf("no result: %+v", w.su)
+	}
+}
+
+// The server is trusted with a version string only.
+func TestSelfUpdateRefusesAHostileTarget(t *testing.T) {
+	withVersion(t, "0.2.0")
+	w := suWorker(t, "")
+	w.setTarget("0.2.1\x1b[2J; rm -rf /")
+	if w.su.target != "" || w.su.state != workerproto.SelfUpdateIdle || w.su.reason != "not_allowed" {
+		t.Fatalf("hostile target: %+v", w.su)
+	}
+	if selfupdate.RequestPending(w.opts.Paths.StateDir) {
+		t.Fatal("request written")
+	}
+}

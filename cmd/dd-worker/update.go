@@ -61,8 +61,9 @@ func cmdUpdateRun(args []string, stderr io.Writer) int {
 	logf := func(format string, a ...any) { fmt.Fprintf(stderr, format+"\n", a...) }
 	pol := worker.LoadPolicy(p.Policy(), false, nil)
 	env := selfupdate.Env{
-		StateDir: p.StateDir, RootDir: *rootDir, LockPath: selfupdate.DefaultLock,
-		Arch: runtime.GOARCH, Keys: release.PublicKeys,
+		StateDir: p.StateDir, RootDir: *rootDir, LibDir: installedLib, LockPath: selfupdate.DefaultLock,
+		MinInterval: time.Minute,
+		Arch:        runtime.GOARCH, Keys: release.PublicKeys,
 		Installed: installedVersion,
 		Policy: func() selfupdate.HostPolicy {
 			return selfupdate.HostPolicy{Valid: pol.Valid, Mode: pol.AutoUpdate, Window: pol.AutoUpdateWindow, Proxy: pol.AutoUpdateProxy}

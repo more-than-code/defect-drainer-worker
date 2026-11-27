@@ -2,7 +2,10 @@ package worker
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
+	"syscall"
 	"time"
 
 	"github.com/more-than-code/defect-drainer-worker/internal/botagent/config"
@@ -65,9 +68,15 @@ func (w *Worker) writeSnapshot(connected bool) {
 	_ = config.WriteFileAtomic(snapshotPath(w.opts.Paths), b, 0o600, 0o700)
 }
 
-// ReadSnapshot reads the last snapshot run wrote.
+// maxSnapshot bounds status.json: root's update step reads it too.
+const maxSnapshot = 1 << 20
+
+// ReadSnapshot reads the last snapshot run wrote. It never follows a link
+// at status.json, opens only a regular file (not a FIFO) and reads at most
+// maxSnapshot bytes: the root update step reads it, and the worker's user
+// owns it.
 func ReadSnapshot(p Paths) (Snapshot, error) {
-	b, err := os.ReadFile(snapshotPath(p))
+	b, err := readRegularFile(snapshotPath(p), maxSnapshot)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -81,4 +90,22 @@ func (w *Worker) policyNow() Policy {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.policy
+}
+
+// readRegularFile reads path, at most limit bytes, without following a
+// link at it or blocking on a FIFO; anything but a regular file is refused.
+func readRegularFile(path string, limit int64) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() || st.Size() > limit {
+		return nil, fmt.Errorf("%s is not a regular file of at most %d bytes", path, limit)
+	}
+	return io.ReadAll(io.LimitReader(f, limit))
 }

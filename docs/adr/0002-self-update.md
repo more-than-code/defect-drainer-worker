@@ -1,7 +1,8 @@
 # ADR 0002: dd-worker updates itself to the server's release (opt-in)
 
-- **Status:** Proposed, Tier 3. No code until a maintainer approves this
-  spec. A change after approval updates this file and is approved again.
+- **Status:** Approved by the maintainer on 2026-11-27 ("Approve as
+  written"), Tier 3. The changes made during implementation and review are
+  listed in §14 and wait for the maintainer's approval again.
 - **Defect:** DEF-20261123-feature-dd-worker-updates-itself-to-the-svks
 - **Scope:** the worker protocol (`hello_ok`, `hello`), the host policy,
   `install.sh`, a new root-run update step, the release workflow, and the
@@ -55,7 +56,12 @@ Consequences:
 4. **Residual risk:** whoever holds the maintainer's own GitHub account
    can push a tag and approve the signing run (§3). That is the same trust
    the maintainer already is; CloudTrail records every signature, and
-   disabling the KMS key stops it at once.
+   disabling the KMS key stops it at once. Within a minor version, a
+   compromised server can still pick **which** newer signed release a host
+   goes to, for example an older signed patch with a known bug rather than
+   the latest. Every such release was signed by the maintainer; a signed
+   "latest" manifest or a compiled minimum version would close this, and
+   is follow-up work (§14).
 5. **The worker stays unprivileged.** It can only *ask*. A separate step
    that runs as root re-checks everything itself, and treats the request as
    one untrusted string.
@@ -91,27 +97,35 @@ Public keys are public: they live in this repository.
 trigger, a pushed tag `vX.Y.Z` on a commit that is on `main`, and its
 `check`, `gates` and `build` jobs. Two changes:
 
-1. A new **`sign`** job between `build` and `release`:
-   - `environment: release`. The environment admits only tags `v*` and
-     has the maintainer as required reviewer, so each signing waits for
-     one tap in GitHub (approvable from a phone);
-   - `permissions: id-token: write`, `contents: read`, and no secret;
-   - it rebuilds the release itself from the same commit and requires its
-     `SHA256SUMS` to equal the `build` job's byte for byte, so it never
-     signs what another job produced;
-   - it gets a GitHub OIDC token for audience `sts.amazonaws.com`,
-     exchanges it with `sts:AssumeRoleWithWebIdentity` for short-lived
-     credentials (session name `release-<run id>`), and calls `kms:Sign`.
-     The region, role ARN and key ARN are **environment variables** of
-     `release`, set in GitHub, never committed;
-   - it checks the signature against the compiled `PublicKeys` before
-     uploading `SHA256SUMS.sig`, so a signature hosts would refuse is
-     never published;
-   - only first-party actions pinned by SHA, the runner's own `aws` CLI,
-     `GOFLAGS=-mod=readonly`, `GOTOOLCHAIN=local`.
+1. Three new jobs between `build` and `release`, run only when the
+   compiled keys are real (`release-sign keys`):
+   - **`sums`** (no credentials) rebuilds the release from the same commit
+     with `GOFLAGS=-mod=readonly` and `GOTOOLCHAIN=local` (the `build` job
+     uses the same) and requires its `SHA256SUMS` to equal the `build`
+     job's byte for byte. It hands on only `SHA256SUMS`, at most 4096 bytes.
+   - **`sign`**: `environment: release` (admits only tags `v*`, the
+     maintainer as required reviewer, so each signing waits for one tap
+     in GitHub, approvable from a phone); `permissions: id-token: write`
+     and nothing else; no secret. It runs **no code from the repository**:
+     no checkout, only `curl`, `jq` and the runner's `aws` CLI on the
+     `sums` job's file. It checks `GITHUB_WORKFLOW_REF` is this
+     repository's `release.yml` at the tag, gets a GitHub OIDC token for
+     audience `sts.amazonaws.com`, exchanges it with
+     `sts:AssumeRoleWithWebIdentity` (session name `release-<run id>`,
+     token passed as a file, never on a command line, every value
+     masked), and calls `kms:Sign`. The region, role ARN and key ARN are
+     **environment variables** of `release`, set in GitHub, never committed.
+   - **`sigcheck`** (no credentials) checks the signature against the
+     compiled `PublicKeys`, so a signature hosts would refuse is never
+     published.
+   - Only first-party actions pinned by SHA.
 2. **`release`** publishes `SHA256SUMS.sig` with the other assets, and
    refuses to run unless `github.workflow_ref` is this repository's
    `.github/workflows/release.yml` at the tag.
+3. While the compiled keys are the placeholder, the three jobs are skipped
+   and the release is published **unsigned**; no host updates to it by
+   itself (`key_placeholder`, `download_failed` for the missing
+   signature).
 
 **AWS side (the maintainer's step, §13).** Region and account are not
 recorded here.
@@ -140,13 +154,24 @@ release from moving. A workflow on any other branch or tag gets a
 different `sub` or never reaches the environment, and AWS refuses it.
 Every `Sign` call is in CloudTrail with the run id.
 
+The tag ruleset is what keeps the `release` environment for the
+maintainer: the environment admits any `v*` tag and AWS trusts every run
+of it, so someone who could create a `v*` tag on another commit could
+present an edited workflow for the maintainer's approval. With creation
+restricted to admins, only the maintainer can. The approver checks the
+run's commit is on `main` before tapping approve. An optional extra
+hardening is a custom OIDC subject that includes `job_workflow_ref`, with
+the trust policy matching it.
+
 **Rotation and revocation.** Disabling the release key in KMS stops all
 signing at once. A key is added to or removed from `PublicKeys` only by a
 release signed with a key hosts already trust: after a compromise, the
 maintainer grants the signer role use of the recovery key for one run,
 releases a version whose list drops the old key and adds a new one, and
 revokes the grant. Hosts that update to it stop trusting the old key.
-If both keys are lost, hosts are updated by hand once.
+If both keys are lost, hosts are updated by hand once. That the recovery
+key signs only key rotations is a procedure, not a check in the code:
+hosts accept a release signed by any compiled key.
 
 ## 4. Protocol (worker-protocol v1, new §23, capability `self_update.v1`)
 
@@ -196,7 +221,7 @@ auto_update = "off"
 
 # Optional: the only proxy the download may use (http(s)://host:port).
 # Nothing from the worker's environment is used.
-# auto_update_https_proxy = "http://proxy.internal:3128"
+# auto_update_https_proxy = "http://proxy.example:3128"
 ```
 
 Rules the root step enforces (the worker checks them too, only to avoid a
@@ -229,9 +254,20 @@ pending:
    else, to `/var/lib/dd-worker/update/request` (its own directory, 0700)
    by write-and-rename, and goes to state `updating`. It keeps declining
    offers until it is restarted or the root step reports a result.
-4. **Cool-down:** a version that ended `rolled_back`, `refused` or
-   `failed` is not requested again for 6 hours, or until the server's
-   target changes.
+4. **Cool-down:** a version that ended `rolled_back`, `failed` or
+   `refused` is not requested again for 6 hours from the result's time,
+   or until the server's target changes. A refusal about timing (`busy`,
+   `outside_window`, `cooldown`) is asked again after 5 minutes instead.
+   The worker reads `result.json` on every step (once a minute), not only
+   at start: the root step writes it last, after it has restarted the
+   worker.
+5. **No endless drain:** the result answers the version the request
+   named, even if the server's target changed meanwhile. A request nobody
+   takes within 10 minutes ends `no_root_step`; one taken but never
+   answered within 20 minutes (the unit stops after 15) ends `no_result`.
+   Both cool down for 6 hours and stop the drain.
+6. The server's `target_release` must parse as a version; anything else
+   is dropped (`not_allowed`) and never shown or logged as sent.
 
 ### 6.2 The root step (`dd-worker-update`)
 
@@ -241,15 +277,22 @@ runs `/usr/local/bin/dd-worker update-run`. That is the **installed,
 root-owned** binary, not anything the worker can write.
 
 1. Take `flock /run/dd-worker-update.lock` without waiting (a second run
-   exits).
+   exits). A lock that fails for another reason deletes the request and
+   writes `failed internal`, so the path unit does not keep firing.
+   Runs are spaced at least a minute apart (`last-run` in root's dir), so
+   a request the worker keeps writing costs one cheap run a minute.
 2. Read the request: `open` with `O_NOFOLLOW`, a regular file owned by
    `dd-worker`, at most 64 bytes, one line matching
-   `^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-rc[0-9]{1,4})?$`. Delete it.
-   Anything else: `refused bad_request`.
+   `^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})(-rc[1-9][0-9]{0,3})?$`.
+   Delete whatever is at the path (a file, a link, an empty directory).
+   Anything else: `refused bad_request`. The same target that ended
+   `failed` or `rolled_back` less than 6 hours ago is not tried again, and
+   that result is kept.
 3. Load `policy.toml` itself (root-owned, as today) and re-check §5
    against the installed version (`readlink /usr/local/bin/dd-worker`).
    `refused off|not_newer|cross_minor|not_allowed|outside_window`.
-4. Re-check idle with `dd-worker health --idle`. Busy: `refused busy` (the
+4. Re-check idle from the worker's `status.json` (read without following a
+   link, a regular file of at most 1 MiB). Busy: `refused busy` (the
    worker asks again later). The worker could lie about being idle; that
    only cuts off its own jobs.
 5. **Download** from the address compiled into the binary,
@@ -261,16 +304,24 @@ root-owned** binary, not anything the worker can write.
    first, **verify the signature**, then the one tarball for this
    platform, then check it against the signed sums.
    `failed download_failed|signature_invalid|sum_mismatch|key_placeholder`.
-6. **Stage** into a root-owned 0700 directory: regular files only, no
-   absolute paths, `..` or links, the file list `dist.sh` makes and no
-   other. The staged `dd-worker version` must print the version
-   (`failed version_mismatch`).
+6. **Stage** into a root-owned directory under
+   `/var/lib/dd-worker-update` (0755, so `nobody` can run the staged
+   binary; root's dir itself is 0755 and the worker cannot write there):
+   regular files only, no absolute paths, `..` or links, the file list
+   `dist.sh` makes and no other. The staged `dd-worker version`, run as
+   `nobody` with an empty environment, must print the version
+   (`failed version_mismatch`). An installed `/usr/local/lib/dd-worker/<version>`
+   whose `dd-worker` is not byte for byte the staged one is removed first,
+   because `install.sh` reuses an installed version as it is.
 7. **Install** by running the *new* release's `install.sh upgrade <version>`
    (it is in the signed `SHA256SUMS`) with
    `DD_WORKER_RELEASE_BASE=file://<staging dir>`, so it re-checks the sums
    and uses the existing tested path: unpack alongside, switch the unit and
    the binary link, restart, wait for `connected (protocol` in the journal
-   (60 s), roll back to the previous version if that does not appear.
+   (60 s), roll back to the previous version if that does not appear. If
+   `install.sh` stops for another reason after it switched (the link no
+   longer names the old version), the root step runs `install.sh rollback`
+   itself: `rolled_back install_failed`.
 8. Afterwards, `dd-worker health --wait` must pass within 60 s; otherwise
    `install.sh rollback` and restart.
 9. **Result:** write
@@ -280,18 +331,24 @@ root-owned** binary, not anything the worker can write.
    it in `hello.self_update.last`.
 
 Unit hardening for `dd-worker-update.service`: `ProtectSystem=strict` with
-`ReadWritePaths` only for `/usr/local/lib/dd-worker`, `/usr/local/bin`,
-`/etc/systemd/system`, `/var/lib/dd-worker/update`, `/var/lib/dd-worker-update`
-and `/run`; `PrivateTmp`, `NoNewPrivileges`,
-`RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `RuntimeMaxSec=900`,
-and `StartLimitIntervalSec=1h` / `StartLimitBurst=4` so the worker cannot
-make it spin. It needs D-Bus to systemd for the restart, as `install.sh`
-does.
+`ReadWritePaths` for what `install.sh upgrade` and `rollback` write:
+`/usr/local/lib/dd-worker`, `/usr/local/bin`, `/etc/systemd/system`,
+`/etc/dd-worker` and `/var/lib/dd-worker` (their owners and modes, and
+`secrets.env`'s owner on a rollback past rc7), `/home/dd-worker`, root's
+`/var/lib/dd-worker-update` and `/run`; `PrivateTmp`, `NoNewPrivileges`,
+`RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `RestrictSUIDSGID`,
+`ProtectKernel*`, `ProtectControlGroups`, `SystemCallArchitectures=native`,
+`MemoryMax=512M`, `RuntimeMaxSec=900`, and no start limit (step 1 paces
+runs; a start limit would leave the path unit failed). It needs D-Bus to
+systemd for the restart, as `install.sh` does. Narrower write paths and a
+capability bounding set need a run on a real host first (§14).
 
 **Root helper scope:** it installs a signed dd-worker release and rolls
 back to the previous one. It reads nothing else from the worker than one
-version string, runs no command from the request, and never touches
-`policy.toml`, `secrets.env` or the credential.
+version string and the busy list in `status.json`, runs no command from
+the request, and never changes `policy.toml` or the credential;
+`secrets.env` changes only as `install.sh` already changes it (its owner,
+on a rollback past rc7).
 
 ## 7. Failure and rollback
 
@@ -300,6 +357,8 @@ version string, runs no command from the request, and never touches
 | Bad signature, sum, tarball or version | `failed <reason>`; nothing on the host changed | old version |
 | Download error or timeout | `failed download_failed` | old version |
 | New version does not connect within 60 s | `rolled_back not_connected` (install.sh's existing rollback) | old version |
+| install.sh stops after switching, for another reason | `rolled_back install_failed` (the root step's rollback) | old version |
+| The root step dies without a result | the worker gives up after 20 minutes, `no_result` | old version, or new if it got that far |
 | Connects but `health --wait` fails | `rolled_back health` | old version |
 | Rollback itself fails | `failed rollback_failed`; the worker may be down. The server's existing `worker offline` signal fires; a person runs `install.sh rollback` | unknown |
 | Power loss mid-update | install.sh switches with atomic renames, so the link points at one complete version; the next boot starts it | old or new |
@@ -410,3 +469,33 @@ release on), its policy keys stay valid after a rollback.
    no update code; the host owner then sets `auto_update = "server"`.
 4. From the next release on, changing the server's
    `DEFECT_DRAINER_WORKER_RELEASE` is enough.
+
+## 14. Changes after approval (2026-11-27, for re-approval)
+
+Made while implementing and after two independent reviews (security;
+correctness and tests). Each is reflected in the sections above.
+
+1. **Protocol:** `status` frames carry `self_update` too, and the object
+   has `target` and `reason` (§4).
+2. **Signing jobs:** the one `sign` job is split into `sums` (rebuild and
+   compare), `sign` (KMS only, no repository code) and `sigcheck` (no
+   credentials), so no code from the tag runs where the OIDC token is
+   (§3). Releases are published unsigned while the placeholder key is
+   compiled in (§3).
+3. **Worker:** reads `result.json` every step; cool-down from the result's
+   time; short retry for timing refusals; `no_result` timeout; results
+   matched to the requested version; the server's target validated (§6.1).
+4. **Root step:** paces runs a minute apart and has no systemd start limit;
+   always clears the request; its own 6-hour cool-down; rolls back a
+   half-finished install; replaces a stale installed version dir; reads
+   `status.json` safely; a stricter version pattern (no leading zeros)
+   (§6.2, §7).
+5. **Unit:** `ReadWritePaths` also has `/etc/dd-worker`, `/var/lib/dd-worker`
+   and `/home/dd-worker`, because `install.sh` writes there; the staging
+   dir is 0755, not 0700 (§6.2).
+6. **Not done here, follow-up:** a signed "latest" manifest or compiled
+   minimum version (§2); narrower `ReadWritePaths` and a capability
+   bounding set, after a real-host run; the container end-to-end update
+   test of §12 (announce, drain, download, verify, install, restart,
+   healthy, and the failure cases), which needs a release signed with a
+   test key.

@@ -17,7 +17,7 @@ type Version struct {
 	RC int
 }
 
-var versionRE = regexp.MustCompile(`^([0-9]{1,4})\.([0-9]{1,4})\.([0-9]{1,4})(?:-rc([1-9][0-9]{0,3}))?$`)
+var versionRE = regexp.MustCompile(`^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})(?:-rc([1-9][0-9]{0,3}))?$`)
 
 // ErrBadVersion: not X.Y.Z or X.Y.Z-rcN.
 var ErrBadVersion = errors.New("version is not X.Y.Z or X.Y.Z-rcN")

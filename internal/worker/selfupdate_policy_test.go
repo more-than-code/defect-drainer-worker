@@ -15,9 +15,9 @@ func TestPolicyAutoUpdateKeys(t *testing.T) {
 	if p := LoadPolicy(path, false, rootUID); !p.Valid || p.AutoUpdate != workerproto.SelfUpdateOff || p.AutoUpdateWindow.Set || p.AutoUpdateProxy != "" {
 		t.Fatalf("defaults %+v", p)
 	}
-	writeFile(t, path, base+"auto_update = \"server\"\nauto_update_window = \"02:00-05:00\"\nauto_update_https_proxy = \"http://proxy.internal:3128\"\n", 0o644)
+	writeFile(t, path, base+"auto_update = \"server\"\nauto_update_window = \"02:00-05:00\"\nauto_update_https_proxy = \"http://proxy.example:3128\"\n", 0o644)
 	p := LoadPolicy(path, false, rootUID)
-	if !p.Valid || p.AutoUpdate != workerproto.SelfUpdateServer || !p.AutoUpdateWindow.Set || p.AutoUpdateWindow.Start != 120 || p.AutoUpdateProxy != "http://proxy.internal:3128" {
+	if !p.Valid || p.AutoUpdate != workerproto.SelfUpdateServer || !p.AutoUpdateWindow.Set || p.AutoUpdateWindow.Start != 120 || p.AutoUpdateProxy != "http://proxy.example:3128" {
 		t.Fatalf("set %+v", p)
 	}
 	for body, reason := range map[string]string{

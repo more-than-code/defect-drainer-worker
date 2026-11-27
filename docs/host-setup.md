@@ -115,7 +115,7 @@ The release notes name the commit the release was built from. To match a binary
 to its source, check out that commit and run
 `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) make worker-dist WORKER_VERSION=X.Y.Z WORKER_RELEASE_BASE=https://github.com/more-than-code/defect-drainer-worker/releases/download`
 with the Go version in `go.mod`:
-the tarballs are reproducible, so its `SHA256SUMS` matches the release's. `dd-worker version` prints `X.Y.Z`.
+with GNU tar (as on the release runner) the tarballs are reproducible, so its `SHA256SUMS` matches the release's. `dd-worker version` prints `X.Y.Z`.
 
 ## Policy
 
@@ -645,10 +645,13 @@ How it runs:
 
 The result is in `/var/lib/dd-worker-update/result.json`, in
 `dd-worker status` (`auto-update:` and `last update:` lines) and in the
-console's Workers view. After a try that did not succeed, the worker waits 6
-hours before it tries that version again, or until the server names another
-one. If no root step answers within 10 minutes (the path unit is off), it
-gives up with `no_root_step`.
+console's Workers view. After a try that failed or was rolled back, neither
+the worker nor the root step tries that version again for 6 hours, or until
+the server names another one. A refusal about timing (`busy`,
+`outside_window`) is retried after 5 minutes. If no root step takes the
+request within 10 minutes (the path unit is off), the worker gives up with
+`no_root_step`; if one takes it and never answers within 20 minutes, with
+`no_result`.
 
 `install.sh install` and `upgrade` enable `dd-worker-update.path`; it does
 nothing while `auto_update` is `"off"`. A host on 0.2.0-rc9 or older has no
