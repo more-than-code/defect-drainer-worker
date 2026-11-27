@@ -93,6 +93,12 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.logf("$HOME %s holds the state dir: agents' writes to it are not denied", home)
 	}
 	go w.readinessLoop(ctx)
+	// The self-update goroutines end with Run (also on ErrRevoked and the
+	// other final errors), and Run returns only after they have.
+	suCtx, suStop := context.WithCancel(ctx)
+	defer w.suWG.Wait()
+	defer suStop()
+	w.suWG.Go(func() { w.selfUpdateLoop(suCtx) })
 	for {
 		err := w.session(ctx, &backoff)
 		if ctx.Err() != nil {
@@ -303,6 +309,7 @@ func (w *Worker) session(ctx context.Context, backoff *conn.Backoff) error {
 	w.writeSnapshot(true)
 	defer w.writeSnapshot(false)
 	defer w.dropSocket(s)
+	w.suWG.Go(func() { w.setTarget(ok.TargetRelease) })
 
 	hb := time.Duration(ok.HeartbeatSec) * time.Second
 	if hb <= 0 {
@@ -432,13 +439,14 @@ func (w *Worker) helloFrame() workerproto.Hello {
 		MaxJobs: pol.MaxJobs, BusyJobIDs: w.busyIDs(), Adapters: st, Tools: w.toolsNow(), Policy: w.wirePolicy(pol),
 		VerifySandbox: verifySandboxWire(v),
 		JobLimits:     w.limitsWire(pol),
+		SelfUpdate:    w.selfUpdateWire(),
 	}
 }
 
 // capabilities are this worker's: verify_sandbox.v1 only while the
 // verify sandbox's self-test passes (V9).
 func capabilities(v verifyState) []string {
-	caps := []string{workerproto.CapBlobsV1, workerproto.CapGitTokenV1, workerproto.CapBrowserV1, workerproto.CapVerifySubmittedV1, workerproto.CapJobStackV1, workerproto.CapProjectKeysV1, workerproto.CapSigninRandomV1, workerproto.CapJobMessagesV1}
+	caps := []string{workerproto.CapBlobsV1, workerproto.CapGitTokenV1, workerproto.CapBrowserV1, workerproto.CapVerifySubmittedV1, workerproto.CapJobStackV1, workerproto.CapProjectKeysV1, workerproto.CapSigninRandomV1, workerproto.CapJobMessagesV1, workerproto.CapSelfUpdateV1}
 	if v.err == nil {
 		caps = append(caps, workerproto.CapVerifySandboxV1)
 	}
@@ -469,7 +477,7 @@ func (w *Worker) statusFrame() workerproto.Status {
 	w.mu.Unlock()
 	return workerproto.Status{
 		Header: workerproto.NewHeader(workerproto.TypeStatus), Adapters: st, Tools: w.toolsNow(), Policy: w.wirePolicy(pol),
-		MaxJobs: pol.MaxJobs, BusyJobIDs: w.busyIDs(),
+		MaxJobs: pol.MaxJobs, BusyJobIDs: w.busyIDs(), SelfUpdate: w.selfUpdateWire(),
 	}
 }
 

@@ -166,6 +166,8 @@ type Hello struct {
 	VerifySandbox *VerifySandboxStatus `json:"verify_sandbox,omitempty"`
 	// Additive in 0.2.0-rc10 (per-job limits, §20).
 	JobLimits *JobLimitsStatus `json:"job_limits,omitempty"`
+	// Additive (self-update, §23).
+	SelfUpdate *SelfUpdateStatus `json:"self_update,omitempty"`
 }
 
 type HelloOK struct {
@@ -174,6 +176,9 @@ type HelloOK struct {
 	HeartbeatSec int      `json:"heartbeat_sec"`
 	ServerTime   string   `json:"server_time"`
 	Capabilities []string `json:"capabilities"`
+	// TargetRelease is the server's DEFECT_DRAINER_WORKER_RELEASE, sent
+	// only to a worker that lists CapSelfUpdateV1 (§23). Additive.
+	TargetRelease string `json:"target_release,omitempty"`
 }
 
 // Ping renews the leases of JobIDs held by this worker (§4.2, §5.3).
@@ -191,6 +196,8 @@ type Status struct {
 	Policy     Policy          `json:"policy"`
 	MaxJobs    int             `json:"max_jobs"`
 	BusyJobIDs []string        `json:"busy_job_ids"`
+	// Additive (self-update, §23): sent when the update state changes.
+	SelfUpdate *SelfUpdateStatus `json:"self_update,omitempty"`
 }
 
 // Rotated carries a new pending credential. Never log it (§11).

@@ -1,0 +1,14 @@
+# dd-worker self-update trigger (docs/adr/0002-self-update.md §6.2).
+# Installed by install.sh. When the worker writes its update request, start
+# dd-worker-update.service, which checks everything again as root. Harmless
+# while policy.toml has auto_update = "off": the root step then refuses.
+[Unit]
+Description=Defect Drainer worker self-update trigger
+Documentation=https://github.com/more-than-code/defect-drainer-worker/blob/main/docs/adr/0002-self-update.md
+
+[Path]
+PathExists=/var/lib/dd-worker/update/request
+Unit=dd-worker-update.service
+
+[Install]
+WantedBy=multi-user.target

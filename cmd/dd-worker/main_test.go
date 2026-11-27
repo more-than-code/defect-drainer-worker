@@ -152,3 +152,13 @@ func TestScrubOwnEnvDropsCredentialsDirectory(t *testing.T) {
 		t.Fatal("DD_WORKER_X still set")
 	}
 }
+
+func TestUpdateRunNeedsRoot(t *testing.T) {
+	old := geteuid
+	geteuid = func() int { return 1000 }
+	defer func() { geteuid = old }()
+	var out, errb bytes.Buffer
+	if code := run([]string{"update-run", "--root-dir", t.TempDir()}, strings.NewReader(""), &out, &errb); code != exitFail || !strings.Contains(errb.String(), "runs as root") {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+}

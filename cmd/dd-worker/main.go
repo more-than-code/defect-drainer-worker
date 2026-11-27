@@ -8,6 +8,7 @@
 //	dd-worker policy check [--syntax-only] [--file <path|->]
 //	dd-worker secrets check --file <path|->
 //	dd-worker health --wait <dur> | --idle
+//	dd-worker update-run   (root only: dd-worker-update.service)
 //
 // Every command takes --config-dir (default /etc/dd-worker) and --state-dir
 // (default /var/lib/dd-worker).
@@ -89,6 +90,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdHealth(args[1:], stderr)
 	case "shot":
 		return cmdShot(args[1:], stdout, stderr)
+	case "update-run":
+		return cmdUpdateRun(args[1:], stderr)
 	case "version", "--version":
 		fmt.Fprintln(stdout, worker.Version)
 		return exitOK
@@ -109,6 +112,7 @@ func usage(w io.Writer) {
   dd-worker policy check [--syntax-only] [--file <path|->]
   dd-worker secrets check --file <path|->
   dd-worker health --wait <duration> | --idle
+  dd-worker update-run   (root only; started by dd-worker-update.service)
 common flags: --config-dir (default /etc/dd-worker) --state-dir (default /var/lib/dd-worker)
 init runs as the worker user, never root (sudo -u dd-worker dd-worker init ...)
 `)
@@ -277,6 +281,19 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	if snap.Seccomp != "" {
 		fmt.Fprintf(stdout, "seccomp:    %s\n", snap.Seccomp)
+	}
+	if su := snap.SelfUpdate; su != nil {
+		line := su.Mode + ", " + su.State
+		if su.Target != "" {
+			line += ", server target " + su.Target
+		}
+		if su.Reason != "" {
+			line += " (" + su.Reason + ")"
+		}
+		fmt.Fprintf(stdout, "auto-update: %s\n", line)
+		if l := su.Last; l != nil {
+			fmt.Fprintf(stdout, "last update: %s -> %s %s %s at %s\n", l.From, l.To, l.Result, l.Reason, l.At)
+		}
 	}
 	return code
 }

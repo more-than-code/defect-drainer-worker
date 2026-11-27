@@ -7,7 +7,8 @@ the worker sends and never sends.
 `dd-worker` runs Defect Drainer coding-agent jobs on a Linux host you own. It
 connects out to your Defect Drainer server over a WebSocket, takes the jobs its
 policy allows, runs the coding agent (Claude Code) in a sandbox, and pushes the
-job branch when an operator ships. It never downloads code or updates itself.
+job branch when an operator ships. It never downloads code, and updates itself
+only when you turn that on (Self-update).
 
 Everything below runs as root (`sudo`). `install.sh` is POSIX sh, idempotent,
 and prints each step.
@@ -89,12 +90,19 @@ It creates the `dd-worker` system user, and never overwrites an existing
 
 ## Check a release
 
-Each release has three tarballs, `install.sh` and `SHA256SUMS`:
+Each release has three tarballs, `install.sh`, `SHA256SUMS` and, once the
+release key is in place, `SHA256SUMS.sig`:
 
 - `dd-worker_X.Y.Z_linux_arm64.tar.gz`, `dd-worker_X.Y.Z_linux_amd64.tar.gz`,
   `dd-worker_X.Y.Z_darwin_arm64.tar.gz`;
 - each holds `dd-worker`, `install.sh`, `dd-worker.service`,
+  `dd-worker-update.service`, `dd-worker-update.path`,
   `policy.example.toml`, `README-worker.md`, `LICENSE` and `NOTICE`.
+
+`SHA256SUMS.sig` is a base64 Ed25519 signature over `SHA256SUMS`, made in
+the release workflow with an AWS KMS key nobody can export
+(`docs/adr/0002-self-update.md` §3). The public keys are compiled into
+dd-worker (`internal/release/release.go`).
 
 `install.sh` already checks the tarball against `SHA256SUMS`. To check by hand,
 download the release's files into one directory and run:
@@ -105,7 +113,9 @@ sha256sum -c --ignore-missing SHA256SUMS
 
 The release notes name the commit the release was built from. To match a binary
 to its source, check out that commit and run
-`make worker-dist WORKER_VERSION=X.Y.Z`. `dd-worker version` prints `X.Y.Z`.
+`SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) make worker-dist WORKER_VERSION=X.Y.Z WORKER_RELEASE_BASE=https://github.com/more-than-code/defect-drainer-worker/releases/download`
+with the Go version in `go.mod`:
+with GNU tar (as on the release runner) the tarballs are reproducible, so its `SHA256SUMS` matches the release's. `dd-worker version` prints `X.Y.Z`.
 
 ## Policy
 
@@ -596,8 +606,59 @@ before rolling back past rc9. They run verify commands unsandboxed, and only
 with `allow_verify_commands = true`: leave that key out (or false) on a host
 you roll back. A host that never set `verify_commands` and keeps
 `allow_verify_commands = false` skips verify on every version.
-Versions before 0.2.0-rc10 refuse `job_memory_max`, `job_tasks_max` and
-`job_cpu_percent` the same way: remove them before rolling back past rc10.
+Versions before 0.2.0-rc10 refuse `job_memory_max`, `job_tasks_max`,
+`job_cpu_percent`, `auto_update`, `auto_update_window` and
+`auto_update_https_proxy` the same way: remove them before rolling back past
+rc10.
+
+## Self-update
+
+From 0.2.0-rc10 a worker can follow the server's target release by itself.
+It is off unless you turn it on in `policy.toml`:
+
+```toml
+auto_update = "server"
+# auto_update_window = "02:00-05:00"   # local time, may wrap midnight
+# auto_update_https_proxy = "http://proxy.example:3128"
+```
+
+The server only names a version. The worker updates only to a newer version
+in the same minor (`0.2.x`), only inside the window when you set one, and
+only to a release whose `SHA256SUMS` is signed (`SHA256SUMS.sig`) by a
+release key compiled into the dd-worker you run. It downloads only from this
+project's GitHub releases, through the proxy you name or none.
+
+How it runs:
+
+1. The worker declines new jobs (`busy`, "updating dd-worker") and waits for
+   its running jobs to end.
+2. It writes the version to `/var/lib/dd-worker/update/request`. That is all
+   the unprivileged worker can do.
+3. A root oneshot unit, `dd-worker-update.service`, started by
+   `dd-worker-update.path`, runs `dd-worker update-run`. It checks every rule
+   again, downloads the release, checks the signature and the sums, runs the
+   new binary's `dd-worker version` as `nobody`, then runs the new release's
+   own `install.sh upgrade` with the files it checked.
+4. If the new version does not connect within 60 seconds, `install.sh`
+   switches back by itself. If it connects but `dd-worker health` then fails,
+   the root step runs `install.sh rollback`.
+
+The result is in `/var/lib/dd-worker-update/result.json`, in
+`dd-worker status` (`auto-update:` and `last update:` lines) and in the
+console's Workers view. After a try that failed or was rolled back, neither
+the worker nor the root step tries that version again for 6 hours, or until
+the server names another one. A refusal about timing (`busy`,
+`outside_window`) is retried after 5 minutes. If no root step takes the
+request within 10 minutes (the path unit is off), the worker gives up with
+`no_root_step`; if one takes it and never answers within 20 minutes, with
+`no_result`.
+
+`install.sh install` and `upgrade` enable `dd-worker-update.path`; it does
+nothing while `auto_update` is `"off"`. A host on 0.2.0-rc9 or older has no
+updater: upgrade it by hand once (`sudo sh install.sh upgrade X.Y.Z`).
+A new minor version (0.3.0) is always a manual upgrade, because it may need
+a policy edit. Releases signed before the first real release key are not
+signed at all, and no host updates to them by itself.
 
 ## Remove
 

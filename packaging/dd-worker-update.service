@@ -1,0 +1,45 @@
+# dd-worker self-update, the root step (docs/adr/0002-self-update.md §6.2).
+# Started by dd-worker-update.path. It reads one version string from the
+# worker's request, re-checks policy.toml (auto_update = "server", newer,
+# same minor, the window), downloads that release from the fixed GitHub
+# address, verifies its signature with the keys compiled into the installed
+# dd-worker, and runs the release's own install.sh upgrade, which rolls back
+# when the new version does not connect. It installs and rolls back
+# dd-worker and nothing else.
+[Unit]
+Description=Defect Drainer worker self-update
+Documentation=https://github.com/more-than-code/defect-drainer-worker/blob/main/docs/adr/0002-self-update.md
+# No start limit: update-run spaces its own runs a minute apart (a request
+# the worker keeps writing costs one cheap run a minute), and a start limit
+# would leave the path unit failed until someone ran reset-failed.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/dd-worker update-run
+RuntimeMaxSec=900
+TimeoutStopSec=150
+KillMode=mixed
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# What install.sh upgrade and rollback write, the request it deletes, and
+# root's own dir (result.json, the staging dir).
+ReadWritePaths=/usr/local/lib/dd-worker /usr/local/bin /etc/systemd/system /etc/dd-worker /var/lib/dd-worker /var/lib/dd-worker-update /home/dd-worker /run
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+MemoryMax=512M
+UMask=0022
