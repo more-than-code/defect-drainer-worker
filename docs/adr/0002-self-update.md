@@ -35,7 +35,7 @@ exceed what the host owner allows.**
 | Party compromised | What it must not be able to do |
 |---|---|
 | The control plane (or its database, or an operator account) | Make a host run any binary that the release key did not sign; downgrade a host; jump a minor version; update a host that did not opt in. |
-| The GitHub repository or its release assets | Make a host run a binary the release key did not sign. |
+| The GitHub repository or its release assets (anyone who can push a branch, edit a release or open a PR) | Make a host run a binary the release key did not sign. |
 | The worker process (the `dd-worker` user, which the agent shares) | Gain root, or install anything except a signed release the policy allows. |
 | The network path | Anything beyond a failed download. |
 
@@ -52,30 +52,101 @@ Consequences:
 3. **The download address, the key, the opt-in and the limits are fixed on
    the host**: compiled into the root-owned binary or read from the
    root-owned `policy.toml`.
-4. **The worker stays unprivileged.** It can only *ask*. A separate step
+4. **Residual risk:** whoever holds the maintainer's own GitHub account
+   can push a tag and approve the signing run (§3). That is the same trust
+   the maintainer already is; CloudTrail records every signature, and
+   disabling the KMS key stops it at once.
+5. **The worker stays unprivileged.** It can only *ask*. A separate step
    that runs as root re-checks everything itself, and treats the request as
    one untrusted string.
 
-## 3. Release signing
+## 3. Release signing (AWS KMS, signed in the release workflow)
 
-- Each release gains one asset, `SHA256SUMS.sig`: one line, the base64 of
-  a plain Ed25519 signature (RFC 8032) over the exact bytes of
-  `SHA256SUMS`. `SHA256SUMS` already lists every tarball and `install.sh`.
-- The public key is compiled into `dd-worker` (`internal/release`). The
-  build ships a placeholder (all zero bytes) until the real key exists; a
-  binary with the placeholder refuses every update (`key_placeholder`), and
-  a release build checks that the real key is in.
-- The private key never enters this repository, CI logs or the control
-  plane. Where it lives is an open decision (§11, question 1).
-- `go run ./cmd/release-sign` (never shipped in a tarball) has two verbs:
-  `keygen` and `sign <SHA256SUMS>`.
-- The release workflow stays as it is (tag → gates → build → GitHub
-  Release). Signing is one more step on the published release: download
-  `SHA256SUMS`, sign it, upload `SHA256SUMS.sig`. A release without the
-  signature installs by hand as today, but no host updates to it by itself.
-- Key rotation: a new public key ships in a release signed by the old key;
-  hosts that update to it trust only the new key from then on. A lost key
-  means hosts are updated by hand once to a release with the new key.
+The signing key is an AWS KMS Ed25519 key that never leaves KMS. The
+release workflow signs with it through GitHub OIDC, so no private key exists
+on a person's machine, in GitHub secrets or in a log. This is the scheme
+the same maintainer already runs for another product's agent releases.
+This repository gets its **own** keys: one leak does not reach both
+products.
+
+**What is signed.** Each release gains one asset, `SHA256SUMS.sig`: one
+line, the base64 of a plain Ed25519 signature (RFC 8032 PureEdDSA) over the
+exact bytes of `SHA256SUMS`, which already lists every tarball and
+`install.sh`. KMS key spec `ECC_NIST_EDWARDS25519`, key usage
+`SIGN_VERIFY`, algorithm `ED25519_SHA_512`, `MessageType` `RAW` gives
+exactly that signature, so the host checks it with Go's `ed25519.Verify`
+and needs no AWS code. A `RAW` message is at most 4096 bytes; `SHA256SUMS`
+is well under that, and the sign job refuses one over it.
+
+**Keys on the host.** `internal/release.PublicKeys` is a fixed list
+compiled into `dd-worker`: the **release key** (KMS, used by CI) and a
+**recovery key** (a second KMS key that no role may use; it signs only a
+release that rotates keys). The build ships a placeholder (all zero bytes)
+until the real keys exist; a binary with only the placeholder refuses
+every update (`key_placeholder`), and `go test -tags release
+./internal/release` fails on a placeholder, an empty list or a duplicate.
+Public keys are public: they live in this repository.
+
+**The release workflow** (`.github/workflows/release.yml`) keeps its
+trigger, a pushed tag `vX.Y.Z` on a commit that is on `main`, and its
+`check`, `gates` and `build` jobs. Two changes:
+
+1. A new **`sign`** job between `build` and `release`:
+   - `environment: release`. The environment admits only tags `v*` and
+     has the maintainer as required reviewer, so each signing waits for
+     one tap in GitHub (approvable from a phone);
+   - `permissions: id-token: write`, `contents: read`, and no secret;
+   - it rebuilds the release itself from the same commit and requires its
+     `SHA256SUMS` to equal the `build` job's byte for byte, so it never
+     signs what another job produced;
+   - it gets a GitHub OIDC token for audience `sts.amazonaws.com`,
+     exchanges it with `sts:AssumeRoleWithWebIdentity` for short-lived
+     credentials (session name `release-<run id>`), and calls `kms:Sign`.
+     The region, role ARN and key ARN are **environment variables** of
+     `release`, set in GitHub, never committed;
+   - it checks the signature against the compiled `PublicKeys` before
+     uploading `SHA256SUMS.sig`, so a signature hosts would refuse is
+     never published;
+   - only first-party actions pinned by SHA, the runner's own `aws` CLI,
+     `GOFLAGS=-mod=readonly`, `GOTOOLCHAIN=local`.
+2. **`release`** publishes `SHA256SUMS.sig` with the other assets, and
+   refuses to run unless `github.workflow_ref` is this repository's
+   `.github/workflows/release.yml` at the tag.
+
+**AWS side (the maintainer's step, §13).** Region and account are not
+recorded here.
+
+- KMS key `dd-worker-release`: asymmetric, sign and verify,
+  `ECC_NIST_EDWARDS25519`; key administrator the maintainer only.
+- KMS key `dd-worker-recovery`: the same type; no role or user may use it.
+- IAM role `dd-worker-release-signer`, web identity for the existing
+  GitHub OIDC provider. Trust policy: `aud` = `sts.amazonaws.com` and
+  `sub` = `repo:more-than-code/defect-drainer-worker:environment:release`
+  exactly, no wildcard. One inline policy: `kms:Sign` on the release key's
+  ARN only, with `kms:SigningAlgorithm` = `ED25519_SHA_512`. Maximum
+  session one hour.
+- Agent sessions get no AWS credential that can sign, change these keys or
+  role, or assume the role; the account's existing deny policy for the
+  agents' IAM user is extended to these two keys and this role.
+
+**Who can cause a signature.** Three gates must all pass: a `v*` tag on a
+commit that is on `main` (only the maintainer, or a maintainer's local
+session, pushes tags; cloud sessions cannot); the `release` environment,
+which admits only `v*` tags and waits for the maintainer's tap; and AWS,
+which hands credentials only to a job whose OIDC `sub` names that
+environment. A tag ruleset on `v*` (restrict creation, update and
+deletion to repository admins) and immutable releases keep a published
+release from moving. A workflow on any other branch or tag gets a
+different `sub` or never reaches the environment, and AWS refuses it.
+Every `Sign` call is in CloudTrail with the run id.
+
+**Rotation and revocation.** Disabling the release key in KMS stops all
+signing at once. A key is added to or removed from `PublicKeys` only by a
+release signed with a key hosts already trust: after a compromise, the
+maintainer grants the signer role use of the recovery key for one run,
+releases a version whose list drops the old key and adds a new one, and
+revokes the grant. Hosts that update to it stop trusting the old key.
+If both keys are lost, hosts are updated by hand once.
 
 ## 4. Protocol (worker-protocol v1, new §23, capability `self_update.v1`)
 
@@ -247,7 +318,7 @@ release on), its policy keys stay valid after a rollback.
   draft).** A bad binary would need both GitHub and the server. Rejected
   as the only check: the server becomes part of the trust path, and the
   server is the party most exposed to the internet. A signature with an
-  offline key needs neither. (The server-announced hash adds nothing once
+  KMS-held key needs neither. (The server-announced hash adds nothing once
   the signature is checked, so it is not sent.)
 - **B. Sigstore / GitHub artifact attestations (keyless).** No key to
   hold, but the verifier needs a large dependency tree, which this module's
@@ -259,7 +330,11 @@ release on), its policy keys stay valid after a rollback.
   it.
 - **D. The worker updates its own binary in place.** Needs the worker to
   write root-owned files, which breaks the whole sandbox model.
-- **E. apt repository.** Proper packaging, but a separate signing and
+- **E. A private key held offline on the maintainer's computer, or as a
+  GitHub environment secret.** The first needs a computer for every
+  release; the second can leak through GitHub. KMS keeps the key
+  unexportable and still signs from a phone tap.
+- **F. apt repository.** Proper packaging, but a separate signing and
   hosting chain to run, and the hosts are mostly a single Pi each.
 
 ## 10. Contract diff
@@ -272,28 +347,27 @@ release on), its policy keys stay valid after a rollback.
 | `policy.toml` | — | `auto_update`, `auto_update_window`, `auto_update_https_proxy` |
 | Release assets | tarballs, `SHA256SUMS`, `install.sh` | adds `SHA256SUMS.sig` |
 | Tarball | `dd-worker`, unit, docs | adds `dd-worker-update.path`, `dd-worker-update.service` |
-| CLI | — | `dd-worker update-run` (root only), `dd-worker status` shows auto-update; `cmd/release-sign` (not shipped) |
+| CLI | — | `dd-worker update-run` (root only), `dd-worker status` shows auto-update; `cmd/release-sign verify-compiled` (CI only, not shipped) |
+| Release workflow | check → gates → build → release | check → gates → build → **sign** (environment `release`, OIDC, KMS) → release |
 | `install.sh` | install, upgrade, rollback, remove, status | same verbs; install/upgrade/remove manage the update units |
 | Control plane | Workers view shows version vs target | also shows auto-update mode, state and last result; MCP `list_workers` adds the same fields; `whats_new` entry. No migration expected: the hello details are stored as they are today (to be confirmed in the control-plane PR) |
 
-## 11. Open decisions for the maintainer
+## 11. Decisions
 
-1. **Where the signing key lives.**
-   - (a) An Ed25519 key generated and kept offline on the maintainer's own
-     machine; each release is signed there (a remote session on that
-     machine can do it on the maintainer's word). Strongest: neither CI
-     nor GitHub can sign.
-   - (b) The key as a secret of a protected GitHub environment that needs
-     the maintainer's approval for each release run. Approvable from a
-     phone, but a GitHub account compromise could then sign.
-2. **Separate key from other products' release keys** (recommended: yes,
-   so one leak does not reach both).
-3. **Pre-releases.** Allow `rcN` updates under `auto_update = "server"`
-   (recommended while every release is an RC), or require a separate
-   `auto_update_prerelease = true`.
+1. **Signing key:** AWS KMS, signed by the release workflow through OIDC,
+   like the maintainer's other product (§3). Separate keys from that
+   product's.
+2. **Recovery key:** a second KMS key nobody may use until a rotation
+   (recommended), so no key ever has to sit on a computer.
+3. **Pre-releases:** `rcN` updates are allowed under
+   `auto_update = "server"` while every release is an RC. A later release
+   can add `auto_update_prerelease` if that changes.
 
 ## 12. Tests and acceptance
 
+- Workflow: `actionlint`; a run from a branch or a non-`v*` tag cannot reach
+  `release` (checked once with a throwaway run); the log holds no
+  credential.
 - Unit: version order (`rc9 < rc10 < final`, refusals), policy keys and
   their refusals, signature verify (good, bad, wrong key, placeholder),
   request-file parsing (size, symlink, owner, bad version), redirect and
@@ -316,12 +390,14 @@ release on), its policy keys stay valid after a rollback.
 
 ## 13. Rollout
 
-1. Worker PR: this ADR, `internal/release`, `cmd/release-sign`, the update
-   code, units, `install.sh`, tests, docs. The placeholder key stays until
-   the maintainer has made the real one.
+0. The maintainer creates the two KMS keys, the signer role and the
+   `release` environment (§3) and shares the two public keys (public).
+1. Worker PR: this ADR, `internal/release` with the real public keys, the
+   `sign` job, the update code, units, `install.sh`, tests, docs. It
+   touches `.github/`, so it merges only with the maintainer's OK.
 2. Control-plane PR: `target_release` in `hello_ok`, the hello field in the
    Workers view and `list_workers`, docs, `whats_new`.
-3. First release with the feature and the real key, signed. Every existing
+3. First release with the feature, signed in CI. Every existing
    host needs **one last manual upgrade** to it, because older binaries have
    no update code; the host owner then sets `auto_update = "server"`.
 4. From the next release on, changing the server's
