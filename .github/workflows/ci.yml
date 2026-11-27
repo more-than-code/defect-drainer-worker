@@ -33,6 +33,8 @@ jobs:
         run: go test ./... -race -count=1 -timeout 25m
       - name: Tidy grep
         run: make tidy-check
-      # install.sh in throwaway Podman debian:bookworm containers.
+      # install.sh in throwaway Docker debian:bookworm containers.
       - name: install.sh container test
+        env:
+          CONTAINER: docker
         run: make worker-package-test

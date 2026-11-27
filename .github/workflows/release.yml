@@ -105,8 +105,10 @@ jobs:
           got=$("$RUNNER_TEMP/dd-worker" version)
           [ "$got" = "$WORKER_VERSION" ] || { echo "::error::dd-worker version is $got, want $WORKER_VERSION"; exit 1; }
           grep -q 'Apache License' "$RUNNER_TEMP/LICENSE" || { echo "::error::the tarball's LICENSE is not Apache-2.0"; exit 1; }
-      # install.sh in throwaway podman debian:bookworm containers (amd64 here).
+      # install.sh in throwaway Docker debian:bookworm containers (amd64 here).
       - name: install.sh container test
+        env:
+          CONTAINER: docker
         run: make worker-package-test
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
